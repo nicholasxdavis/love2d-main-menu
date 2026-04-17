@@ -4,6 +4,7 @@ local UI = {
     lerpVel = 0,
     timer = 0,
     options = {"RESUME", "NEW GAME", "OPTIONS", "EXIT"},
+    optionsDetail = { "AUDIO", "GRAPHICS", "WINDOW", "BACK" },
 
     view = "menu",
     irisActive = false,
@@ -36,8 +37,32 @@ local UI = {
 
     gameStartSound = nil,
     hoverSound = nil,
+    optionsSound = nil,
     lastHoverMenuIndex = nil,
     lastPreviewImgHover = false,
+
+    menuOptionsT = 0,
+    menuOptionsTarget = 0,
+    optionsDetailView = false,
+
+    settings = {
+        master = 1,
+        music = 1,
+        sfx = 1,
+        vsync = true,
+        fullscreen = false,
+        winW = 1280,
+        winH = 720,
+        resIdx = 7,
+        particlesLight = false,
+    },
+    audioSliderFocus = 1,
+    settingsDrag = nil,
+
+    fontSettingsMain = nil,
+    fontSettingsFoot = nil,
+    fontSettingsMainPx = 0,
+    fontSettingsFootPx = 0,
 }
 
 local SPRING_K = 260
@@ -46,12 +71,13 @@ local SPRING_C = 24
 local FONT_MENU = "src/fonts/SairaExtraCondensed-Regular.ttf"
 local FONT_MENU_BOLD = "src/fonts/SairaExtraCondensed-ExtraBold.ttf"
 local REF_MAIN_LINE_H, REF_FOOT_LINE_H, REF_VERSION_LINE_H
+local initParticles
 
 local function captureDefaultFontLineHeights()
     local fm = love.graphics.newFont(52)
     REF_MAIN_LINE_H = fm:getHeight()
     fm:release()
-    local ff = love.graphics.newFont(26)
+    local ff = love.graphics.newFont(28)
     REF_FOOT_LINE_H = ff:getHeight()
     ff:release()
     local fv = love.graphics.newFont(40)
@@ -82,12 +108,38 @@ end
 local MENU_START_Y = 520
 local MENU_SPACING = 85
 
+local MENU_OPTIONS_SCALE_MAX = 1.38
+local MENU_OPTIONS_SPACING_ADD = 52
+local MENU_OPTIONS_T_RATE = 2.85
+local MENU_OPTIONS_BANNER_PIVOT_Y = 31.5
+-- Vertical tweak for options-detail labels vs. the white pill (screen pixels before row scale).
+local MENU_OPTIONS_TEXT_NUDGE_SCREEN_PX = 3
+
+-- Submenu labels swap as soon as options opens (same frame target flips), not after the zoom finishes.
+local function menuShowsOptionsDetail()
+    return UI.menuOptionsTarget > 0.5
+end
+
+local function getMenuLabels()
+    if menuShowsOptionsDetail() then
+        return UI.optionsDetail
+    end
+    return UI.options
+end
+
+local function menuOptionCount()
+    return #getMenuLabels()
+end
+
 local LOGO_X, LOGO_Y = 98, 98
 local LOGO_TARGET_W = 450
 local LOGO_SCALE_MUL = 0.94
 
 local PREVIEW_W = 930
 local PREVIEW_H = 485
+-- Nominal size; actual width may shrink so the card does not overlap the left options column.
+local SETTINGS_PANEL_W = 1120
+local SETTINGS_PANEL_H = 740
 local PREVIEW_MARGIN_RIGHT = 42
 local PREVIEW_OUTLINE_PX = 2
 local PREVIEW_FOOTER_H = 78
@@ -172,6 +224,489 @@ local function getPreviewLayout()
     return px, py, pw, ph
 end
 
+-- Must be defined before settings helpers (e.g. settingsPanelWantsHand) that call these.
+local function screenToVirtual(mx, my)
+    return (mx - UI.offsetX) / UI.scale, (my - UI.offsetY) / UI.scale
+end
+
+local function virtToScreen(vx, vy)
+    return math.floor(UI.offsetX + vx * UI.scale + 0.5), math.floor(UI.offsetY + vy * UI.scale + 0.5)
+end
+
+-- Virtual X center of the menu pill used on the main screen (matches original layout).
+local MENU_PILL_CENTER_X = 300
+
+local RES_PRESETS = {
+    {3840, 2160}, {2560, 1440}, {1920, 1080}, {1680, 1050},
+    {1600, 900}, {1366, 768}, {1280, 720}, {1024, 768},
+}
+local SETTINGS_FILE = "menu_settings.txt"
+local WINDOW_FLAGS = { resizable = true, highdpi = true, msaa = 4 }
+
+local function virtPointInRect(vx, vy, rx, ry, rw, rh)
+    return vx >= rx and vx <= rx + rw and vy >= ry and vy <= ry + rh
+end
+
+local SETTINGS_INNER_PAD_X = 72
+local SETTINGS_INNER_PAD_Y = 48
+
+local SETTINGS_PCT_COL = 96
+
+-- Virtual X: keep the white panel strictly to the right of the selection pill and labels.
+local SETTINGS_PANEL_MIN_LEFT_X = MENU_PILL_CENTER_X + math.ceil(290 * MENU_OPTIONS_SCALE_MAX) + 72
+
+local function audioSliderRows(x0, y0, pw)
+    local pad = SETTINGS_INNER_PAD_X
+    local tw = math.max(160, pw - pad * 2 - SETTINGS_PCT_COL)
+    local baseY = y0 + 188
+    local gap = 128
+    return {
+        { x = x0 + pad, y = baseY, w = tw, key = "master", label = "MASTER" },
+        { x = x0 + pad, y = baseY + gap, w = tw, key = "music", label = "MUSIC" },
+        { x = x0 + pad, y = baseY + gap * 2, w = tw, key = "sfx", label = "SOUND EFFECTS" },
+    }
+end
+
+local function settingsVirtRound(n)
+    return math.floor(n + 0.5)
+end
+
+local function saveSettings()
+    local s = UI.settings
+    local lines = {
+        string.format("master=%.5f", s.master),
+        string.format("music=%.5f", s.music),
+        string.format("sfx=%.5f", s.sfx),
+        "vsync=" .. (s.vsync and "1" or "0"),
+        "fullscreen=" .. (s.fullscreen and "1" or "0"),
+        string.format("winW=%d", s.winW),
+        string.format("winH=%d", s.winH),
+        string.format("resIdx=%d", s.resIdx),
+        "particlesLight=" .. (s.particlesLight and "1" or "0"),
+    }
+    love.filesystem.write(SETTINGS_FILE, table.concat(lines, "\n"))
+end
+
+local function loadSettings()
+    if not love.filesystem.getInfo(SETTINGS_FILE) then
+        return
+    end
+    local text = love.filesystem.read(SETTINGS_FILE)
+    if not text then return end
+    for line in text:gmatch("[^\r\n]+") do
+        local k, v = line:match("^(%w+)=(.*)$")
+        if k and v then
+            if k == "master" or k == "music" or k == "sfx" then
+                local n = tonumber(v)
+                if n then UI.settings[k] = math.max(0, math.min(1, n)) end
+            elseif k == "vsync" or k == "fullscreen" or k == "particlesLight" then
+                UI.settings[k] = (v == "1" or v == "true")
+            elseif k == "winW" or k == "winH" then
+                local n = tonumber(v)
+                if n then UI.settings[k] = math.floor(n) end
+            elseif k == "resIdx" then
+                local n = tonumber(v)
+                if n then UI.settings.resIdx = math.max(1, math.min(#RES_PRESETS, math.floor(n))) end
+            end
+        end
+    end
+end
+
+local function applyAudioVolumes()
+    local st = UI.settings
+    love.audio.setVolume(st.master)
+    local sv = st.sfx
+    if UI.hoverSound then UI.hoverSound:setVolume(sv) end
+    if UI.gameStartSound then UI.gameStartSound:setVolume(sv) end
+    if UI.optionsSound then UI.optionsSound:setVolume(sv) end
+end
+
+local function applyVsyncFlag()
+    pcall(love.window.setVSync, UI.settings.vsync)
+end
+
+local function toggleVsyncSetting()
+    UI.settings.vsync = not UI.settings.vsync
+    applyVsyncFlag()
+    saveSettings()
+end
+
+local function toggleParticlesSetting()
+    UI.settings.particlesLight = not UI.settings.particlesLight
+    saveSettings()
+end
+
+local function toggleFullscreenSetting()
+    local s = UI.settings
+    if s.fullscreen then
+        s.fullscreen = false
+        love.window.setFullscreen(false)
+        love.window.setMode(s.winW, s.winH, WINDOW_FLAGS)
+    else
+        local w, h = love.graphics.getDimensions()
+        s.winW, s.winH = w, h
+        s.fullscreen = true
+        love.window.setFullscreen(true, "desktop")
+    end
+    applyVsyncFlag()
+    updateLayout()
+    initParticles()
+    saveSettings()
+end
+
+local function cycleResolutionSetting()
+    if UI.settings.fullscreen then
+        return
+    end
+    local idx = (UI.settings.resIdx % #RES_PRESETS) + 1
+    UI.settings.resIdx = idx
+    local p = RES_PRESETS[idx]
+    love.window.setMode(p[1], p[2], WINDOW_FLAGS)
+    UI.settings.winW, UI.settings.winH = p[1], p[2]
+    applyVsyncFlag()
+    updateLayout()
+    initParticles()
+    saveSettings()
+end
+
+local function drawSettingsSliderVirt(x, y, w, val, label)
+    local vr = settingsVirtRound
+    local vx, vy, vw = vr(x), vr(y), vr(w)
+    local labY = vy - 58
+    love.graphics.setFont(UI.fontSettingsMain or UI.fontMain)
+    love.graphics.setColor(0.26, 0.27, 0.32, 1)
+    love.graphics.print(label, vx, labY)
+    local trackY = vy + 6
+    local trackH = 16
+    love.graphics.setColor(0.9, 0.91, 0.94, 1)
+    love.graphics.rectangle("fill", vx, trackY, vw, trackH)
+    love.graphics.setColor(0.72, 0.74, 0.8, 0.55)
+    love.graphics.rectangle("line", vx + 0.5, trackY + 0.5, vw - 1, trackH - 1)
+    local fillW = math.max(3, vr(vw * val))
+    love.graphics.setColor(0.82, 0.14, 0.11, 1)
+    love.graphics.rectangle("fill", vx, trackY, fillW, trackH)
+    local cx = x + val * w
+    cx = math.max(x + 12, math.min(x + w - 12, cx))
+    local tcx, tcy = vr(cx) + 0.5, vr(trackY + trackH * 0.5) + 0.5
+    local tr = 14
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.circle("fill", tcx, tcy, tr)
+    love.graphics.setFont(UI.fontSettingsMain or UI.fontMain)
+    love.graphics.setColor(0.28, 0.29, 0.34, 1)
+    local pct = string.format("%d%%", math.floor(val * 100 + 0.5))
+    local ptw = (UI.fontSettingsMain or UI.fontMain):getWidth(pct)
+    love.graphics.print(pct, vx + vw + math.floor((SETTINGS_PCT_COL - ptw) * 0.5 + 0.5), labY)
+end
+
+-- Slanted row: integer verts, no shadow duplicate (avoids fringe / blur).
+local function drawSettingsTrapezoidRowVirt(bx, by, bw, bh, textStr)
+    local vr = settingsVirtRound
+    bx, by, bw, bh = vr(bx), vr(by), vr(bw), vr(bh)
+    local skewT, skewB, ins = 4, 10, 4
+    love.graphics.setColor(0.99, 0.99, 1, 1)
+    love.graphics.polygon(
+        "fill",
+        bx,
+        by + skewT,
+        bx + bw,
+        by,
+        bx + bw - ins,
+        by + bh,
+        bx,
+        by + bh + skewB
+    )
+    love.graphics.setColor(0.72, 0.74, 0.8, 0.65)
+    love.graphics.setLineWidth(1)
+    love.graphics.polygon(
+        "line",
+        bx + 0.5,
+        by + skewT + 0.5,
+        bx + bw - 0.5,
+        by + 0.5,
+        bx + bw - ins - 0.5,
+        by + bh - 0.5,
+        bx + 0.5,
+        by + bh + skewB - 0.5
+    )
+    love.graphics.setLineWidth(1)
+    local fsm = UI.fontSettingsMain or UI.fontMain
+    love.graphics.setFont(fsm)
+    local fh = fsm:getHeight()
+    local fw = fsm:getWidth(textStr)
+    love.graphics.setColor(0.22, 0.23, 0.28, 1)
+    love.graphics.print(textStr, vr(bx + (bw - fw) * 0.5), vr(by + (bh - fh) * 0.5 + skewT * 0.28))
+end
+
+local function drawAudioSettingsVirt(x0, y0, pw, ph)
+    local pad = SETTINGS_INNER_PAD_X
+    local vr = settingsVirtRound
+    local fsm = UI.fontSettingsMain or UI.fontMain
+    local fsf = UI.fontSettingsFoot or UI.fontFooter
+    love.graphics.setFont(fsm)
+    love.graphics.setColor(0.22, 0.23, 0.28, 1)
+    love.graphics.print("LEVELS", vr(x0 + pad), vr(y0 + 40))
+    love.graphics.setFont(fsf)
+    love.graphics.setColor(0.28, 0.29, 0.34, 1)
+    love.graphics.print("Per-channel gain", vr(x0 + pad), vr(y0 + 96))
+    local rows = audioSliderRows(x0, y0, pw)
+    for _, row in ipairs(rows) do
+        drawSettingsSliderVirt(row.x, row.y, row.w, UI.settings[row.key], row.label)
+    end
+    love.graphics.setFont(fsf)
+    love.graphics.setColor(0.32, 0.34, 0.4, 1)
+    love.graphics.printf(
+        "[ and ] adjust |   Tab: next row   |   Drag track",
+        vr(x0 + pad),
+        vr(y0 + ph - 52),
+        pw - pad * 2,
+        "left"
+    )
+end
+
+local function drawGraphicsSettingsVirt(x0, y0, pw, ph)
+    local pad = SETTINGS_INNER_PAD_X
+    local vr = settingsVirtRound
+    local fsm = UI.fontSettingsMain or UI.fontMain
+    local fsf = UI.fontSettingsFoot or UI.fontFooter
+    love.graphics.setFont(fsm)
+    love.graphics.setColor(0.22, 0.23, 0.28, 1)
+    love.graphics.print("DISPLAY", vr(x0 + pad), vr(y0 + 40))
+    love.graphics.setFont(fsf)
+    love.graphics.setColor(0.28, 0.29, 0.34, 1)
+    love.graphics.print("Tap a row to toggle", vr(x0 + pad), vr(y0 + 96))
+    local bx = x0 + pad
+    local y1 = y0 + 132
+    local bw = pw - pad * 2
+    local bh = 58
+    local vsStr = "VERTICAL SYNC  —  " .. (UI.settings.vsync and "ON" or "OFF")
+    drawSettingsTrapezoidRowVirt(bx, y1, bw, bh, vsStr)
+    local y2 = y1 + bh + 22
+    local pStr = "PARTICLES  —  " .. (UI.settings.particlesLight and "LIGHT" or "FULL")
+    drawSettingsTrapezoidRowVirt(bx, y2, bw, bh, pStr)
+    love.graphics.setFont(fsf)
+    love.graphics.setColor(0.32, 0.34, 0.4, 1)
+    love.graphics.printf(
+        "VSync caps frame rate. Light particles reduce GPU load.",
+        vr(x0 + pad),
+        vr(y0 + ph - 52),
+        pw - pad * 2,
+        "left"
+    )
+end
+
+local function drawWindowSettingsVirt(x0, y0, pw, ph)
+    local pad = SETTINGS_INNER_PAD_X
+    local vr = settingsVirtRound
+    local fsm = UI.fontSettingsMain or UI.fontMain
+    local fsf = UI.fontSettingsFoot or UI.fontFooter
+    love.graphics.setFont(fsm)
+    love.graphics.setColor(0.22, 0.23, 0.28, 1)
+    love.graphics.print("DISPLAY MODE", vr(x0 + pad), vr(y0 + 40))
+    love.graphics.setFont(fsf)
+    love.graphics.setColor(0.28, 0.29, 0.34, 1)
+    love.graphics.print("Window and fullscreen", vr(x0 + pad), vr(y0 + 96))
+    local bx = x0 + pad
+    local y1 = y0 + 132
+    local bw = pw - pad * 2
+    local bh = 58
+    local fsStr = "FULLSCREEN  —  " .. (UI.settings.fullscreen and "ON" or "OFF")
+    drawSettingsTrapezoidRowVirt(bx, y1, bw, bh, fsStr)
+    local y2 = y1 + bh + 22
+    local p = RES_PRESETS[UI.settings.resIdx] or RES_PRESETS[7]
+    local resStr = string.format("RESOLUTION  —  %d × %d", p[1], p[2])
+    if UI.settings.fullscreen then
+        resStr = "RESOLUTION —  exit fullscreen to change"
+    end
+    drawSettingsTrapezoidRowVirt(bx, y2, bw, bh, resStr)
+    love.graphics.setFont(fsf)
+    love.graphics.setColor(0.32, 0.34, 0.4, 1)
+    love.graphics.printf(
+        "Desktop fullscreen uses your monitor. Change resolution while windowed.",
+        vr(x0 + pad),
+        vr(y0 + ph - 52),
+        pw - pad * 2,
+        "left"
+    )
+end
+
+local function drawBackSettingsHintVirt(x0, y0, pw, ph)
+    local pad = SETTINGS_INNER_PAD_X
+    local vr = settingsVirtRound
+    local fsm = UI.fontSettingsMain or UI.fontMain
+    local fsf = UI.fontSettingsFoot or UI.fontFooter
+    love.graphics.setFont(fsm)
+    love.graphics.setColor(0.22, 0.23, 0.28, 1)
+    love.graphics.print("DONE?", vr(x0 + pad), vr(y0 + 40))
+    love.graphics.setFont(fsf)
+    love.graphics.setColor(0.28, 0.29, 0.34, 1)
+    love.graphics.printf(
+        "Press Enter on BACK or Escape to return to the main menu.",
+        vr(x0 + pad),
+        vr(y0 + 128),
+        pw - pad * 2,
+        "left"
+    )
+end
+
+local function settingsPanelVirtBounds()
+    local pwNominal, ph = SETTINGS_PANEL_W, SETTINGS_PANEL_H
+    local rightX = UI.V_WIDTH - PREVIEW_MARGIN_RIGHT
+    local maxW = math.max(320, rightX - SETTINGS_PANEL_MIN_LEFT_X)
+    local pw = math.min(pwNominal, maxW)
+    local px = rightX - pw
+    local py = (UI.V_HEIGHT - ph) * 0.5
+    return px, py, pw, ph
+end
+
+local function drawSettingsPanel()
+    local x0, y0, pw, ph = settingsPanelVirtBounds()
+    love.graphics.push()
+    love.graphics.translate(UI.offsetX, UI.offsetY)
+    love.graphics.scale(UI.scale)
+
+    local vr = settingsVirtRound
+    local ix0, iy0, ipw, iph = vr(x0), vr(y0), vr(pw), vr(ph)
+    love.graphics.setColor(0.99, 0.99, 1, 0.97)
+    love.graphics.rectangle("fill", ix0, iy0, ipw, iph)
+    love.graphics.setColor(0.88, 0.16, 0.12, 1)
+    love.graphics.rectangle("fill", ix0 + 18, iy0 + 3, ipw - 36, 4)
+    love.graphics.setColor(0.55, 0.57, 0.64, 0.5)
+    love.graphics.setLineWidth(1)
+    love.graphics.rectangle("line", ix0 + 0.5, iy0 + 0.5, ipw - 1, iph - 1)
+
+    local sel = UI.selection
+    if sel == 1 then
+        drawAudioSettingsVirt(x0, y0, pw, ph)
+    elseif sel == 2 then
+        drawGraphicsSettingsVirt(x0, y0, pw, ph)
+    elseif sel == 3 then
+        drawWindowSettingsVirt(x0, y0, pw, ph)
+    else
+        drawBackSettingsHintVirt(x0, y0, pw, ph)
+    end
+
+    love.graphics.pop()
+end
+
+local function graphicsToggleRects(x0, y0, pw)
+    local pad = SETTINGS_INNER_PAD_X
+    local bx = x0 + pad
+    local y1 = y0 + 132
+    local bw = pw - pad * 2
+    local bh = 58
+    local hitH = bh + 18
+    return { x = bx, y = y1, w = bw, h = hitH, kind = "vsync" },
+        { x = bx, y = y1 + bh + 22, w = bw, h = hitH, kind = "particles" }
+end
+
+local function windowToggleRects(x0, y0, pw)
+    local pad = SETTINGS_INNER_PAD_X
+    local bx = x0 + pad
+    local y1 = y0 + 132
+    local bw = pw - pad * 2
+    local bh = 58
+    local hitH = bh + 18
+    return { x = bx, y = y1, w = bw, h = hitH, kind = "fullscreen" },
+        { x = bx, y = y1 + bh + 22, w = bw, h = hitH, kind = "resolution" }
+end
+
+local function trySettingsPanelMousePressed(vx, vy, button)
+    if button ~= 1 or not menuShowsOptionsDetail() then
+        return false
+    end
+    local x0, y0, pw, ph = settingsPanelVirtBounds()
+    if not virtPointInRect(vx, vy, x0, y0, pw, ph) then
+        return false
+    end
+    local sel = UI.selection
+    if sel == 1 then
+        for _, row in ipairs(audioSliderRows(x0, y0, pw)) do
+            if virtPointInRect(vx, vy, row.x, row.y - 62, row.w, 86) then
+                UI.settingsDrag = row.key
+                UI.settings[row.key] = math.max(0, math.min(1, (vx - row.x) / row.w))
+                applyAudioVolumes()
+                saveSettings()
+                return true
+            end
+        end
+        return true
+    elseif sel == 2 then
+        local r1, r2 = graphicsToggleRects(x0, y0, pw)
+        if virtPointInRect(vx, vy, r1.x, r1.y, r1.w, r1.h) then
+            toggleVsyncSetting()
+            return true
+        end
+        if virtPointInRect(vx, vy, r2.x, r2.y, r2.w, r2.h) then
+            toggleParticlesSetting()
+            return true
+        end
+        return true
+    elseif sel == 3 then
+        local r1, r2 = windowToggleRects(x0, y0, pw)
+        if virtPointInRect(vx, vy, r1.x, r1.y, r1.w, r1.h) then
+            toggleFullscreenSetting()
+            return true
+        end
+        if not UI.settings.fullscreen and virtPointInRect(vx, vy, r2.x, r2.y, r2.w, r2.h) then
+            cycleResolutionSetting()
+            return true
+        end
+        return true
+    end
+    return true
+end
+
+local function updateSettingsSliderDrag(vx, vy)
+    if not UI.settingsDrag or not menuShowsOptionsDetail() or UI.selection ~= 1 then
+        return
+    end
+    local x0, y0, pw = settingsPanelVirtBounds()
+    for _, row in ipairs(audioSliderRows(x0, y0, pw)) do
+        if row.key == UI.settingsDrag then
+            UI.settings[row.key] = math.max(0, math.min(1, (vx - row.x) / row.w))
+            applyAudioVolumes()
+            return
+        end
+    end
+end
+
+local function settingsPanelWantsHand(mx, my)
+    if not menuShowsOptionsDetail() then
+        return false
+    end
+    local vx, vy = screenToVirtual(mx, my)
+    local x0, y0, pw, ph = settingsPanelVirtBounds()
+    if not virtPointInRect(vx, vy, x0, y0, pw, ph) then
+        return false
+    end
+    local sel = UI.selection
+    if sel == 1 then
+        for _, row in ipairs(audioSliderRows(x0, y0, pw)) do
+            if virtPointInRect(vx, vy, row.x, row.y - 62, row.w, 86) then
+                return true
+            end
+        end
+    elseif sel == 2 then
+        local r1, r2 = graphicsToggleRects(x0, y0, pw)
+        if virtPointInRect(vx, vy, r1.x, r1.y, r1.w, r1.h) then return true end
+        if virtPointInRect(vx, vy, r2.x, r2.y, r2.w, r2.h) then return true end
+    elseif sel == 3 then
+        local r1, r2 = windowToggleRects(x0, y0, pw)
+        if virtPointInRect(vx, vy, r1.x, r1.y, r1.w, r1.h) then return true end
+        if virtPointInRect(vx, vy, r2.x, r2.y, r2.w, r2.h) then return true end
+    end
+    return false
+end
+
+local function nudgeAudioSlider(delta)
+    local keys = { "master", "music", "sfx" }
+    local k = keys[UI.audioSliderFocus]
+    if not k then return end
+    UI.settings[k] = math.max(0, math.min(1, UI.settings[k] + delta))
+    applyAudioVolumes()
+    saveSettings()
+end
+
 local function updatePreviewShotCycle()
     if not (UI.previewImage and UI.previewImage2) then
         UI.previewShotMix = 0
@@ -203,18 +738,10 @@ local function getPreviewImageScreenRect()
     return sx, sy, sw, shImg
 end
 
-local function screenToVirtual(mx, my)
-    return (mx - UI.offsetX) / UI.scale, (my - UI.offsetY) / UI.scale
-end
-
-local function virtToScreen(vx, vy)
-    return math.floor(UI.offsetX + vx * UI.scale + 0.5), math.floor(UI.offsetY + vy * UI.scale + 0.5)
-end
-
 local function refreshUiFonts()
     if not UI.scale or UI.scale <= 0 then return end
     local mainPx = math.max(24, math.floor(52 * UI.scale + 0.5))
-    local footPx = math.max(15, math.floor(26 * UI.scale + 0.5))
+    local footPx = math.max(16, math.floor(28 * UI.scale + 0.5))
     if mainPx ~= UI.fontMainPx then
         if UI.fontMain then UI.fontMain:release() end
         local targetMainH = REF_MAIN_LINE_H and (REF_MAIN_LINE_H * mainPx / 52) or mainPx
@@ -223,7 +750,7 @@ local function refreshUiFonts()
     end
     if footPx ~= UI.fontFooterPx then
         if UI.fontFooter then UI.fontFooter:release() end
-        local targetFootH = REF_FOOT_LINE_H and (REF_FOOT_LINE_H * footPx / 26) or footPx
+        local targetFootH = REF_FOOT_LINE_H and (REF_FOOT_LINE_H * footPx / 28) or footPx
         UI.fontFooter = newFontFitLineHeight(FONT_MENU, footPx, targetFootH)
         UI.fontFooterPx = footPx
     end
@@ -236,11 +763,63 @@ local function refreshUiFonts()
     end
 end
 
+local function refreshSettingsFonts()
+    if not UI.scale or UI.scale <= 0 then return end
+    local mainPx = math.max(30, math.floor(66 * UI.scale + 0.5))
+    local footPx = math.max(20, math.floor(38 * UI.scale + 0.5))
+    if mainPx ~= UI.fontSettingsMainPx then
+        if UI.fontSettingsMain then UI.fontSettingsMain:release() end
+        local targetMainH = REF_MAIN_LINE_H and (REF_MAIN_LINE_H * mainPx / 52) or mainPx
+        UI.fontSettingsMain = newFontFitLineHeight(FONT_MENU_BOLD, mainPx, targetMainH, 24)
+        UI.fontSettingsMainPx = mainPx
+    end
+    if footPx ~= UI.fontSettingsFootPx then
+        if UI.fontSettingsFoot then UI.fontSettingsFoot:release() end
+        local targetFootH = REF_FOOT_LINE_H and (REF_FOOT_LINE_H * footPx / 28) or footPx
+        UI.fontSettingsFoot = newFontFitLineHeight(FONT_MENU, footPx, targetFootH)
+        UI.fontSettingsFootPx = footPx
+    end
+end
+
+local function interpRowMetric(ls, fn)
+    local n = menuOptionCount()
+    if n < 1 then return 0 end
+    if ls <= 1 then return fn(1) end
+    if ls >= n then return fn(n) end
+    local il = math.floor(ls)
+    local fh = ls - il
+    return (1 - fh) * fn(il) + fh * fn(il + 1)
+end
+
+local function menuOptionsEase()
+    return smootherstep01(UI.menuOptionsT)
+end
+
+local function rowCenterX(tMo)
+    local te = smootherstep01(tMo)
+    return 300 + (UI.V_WIDTH * 0.5 - 300) * te
+end
+
+local function rowTextY(i, tMo)
+    local te = smootherstep01(tMo)
+    local spacing = MENU_SPACING + MENU_OPTIONS_SPACING_ADD * te
+    local origY = MENU_START_Y + (i - 1) * MENU_SPACING
+    local mid = UI.V_HEIGHT * 0.5
+    local span = (menuOptionCount() - 1) * spacing
+    local tgtY = mid - span * 0.5 + (i - 1) * spacing
+    return origY + (tgtY - origY) * te
+end
+
 local function getMenuIndexAtVirtual(vx, vy)
-    for i = 1, #UI.options do
-        local rowY = MENU_START_Y + (i - 1) * MENU_SPACING
-        local y0, y1 = rowY - 12, rowY + 80
-        if vx >= 25 and vx <= 585 and vy >= y0 and vy <= y1 then
+    local te = menuOptionsEase()
+    for i = 1, menuOptionCount() do
+        local ty = rowTextY(i, UI.menuOptionsT)
+        local rs = 1 + (MENU_OPTIONS_SCALE_MAX - 1) * te
+        local y0, y1 = ty - 12 * rs, ty + 80 * rs
+        local ax = menuShowsOptionsDetail() and MENU_PILL_CENTER_X or rowCenterX(UI.menuOptionsT)
+        local halfW = (0.5 * (540 * (1 - te) + 620 * te)) * rs
+        local x0, x1 = ax - halfW, ax + halfW
+        if vx >= x0 and vx <= x1 and vy >= y0 and vy <= y1 then
             return i
         end
     end
@@ -265,6 +844,10 @@ local function updateMenuCursor()
         return
     end
     local mx, my = love.mouse.getPosition()
+    if settingsPanelWantsHand(mx, my) then
+        love.mouse.setCursor(UI.handCursor)
+        return
+    end
     local vx, vy = screenToVirtual(mx, my)
     local idx = getMenuIndexAtVirtual(vx, vy)
     if idx then
@@ -279,11 +862,20 @@ local function updateMenuCursor()
     end
 end
 
+local function closeOptionsMenuLayout()
+    UI.menuOptionsTarget = 0
+    UI.selection = 3
+    UI.lerpSelection = 3
+    UI.lerpVel = 0
+    UI.settingsDrag = nil
+end
+
 local function activateMenuOption(index)
     if UI.irisActive or UI.view == "game" then
         return
     end
-    local label = UI.options[index]
+    local labels = getMenuLabels()
+    local label = labels[index]
     if label == "RESUME" or label == "NEW GAME" then
         local h = UI.hoverSound
         if h then h:stop() end
@@ -295,6 +887,16 @@ local function activateMenuOption(index)
         end
         UI.irisActive = true
         UI.irisTime = 0
+    elseif label == "OPTIONS" then
+        UI.menuOptionsTarget = 1
+        local opt = UI.optionsSound
+        if opt then
+            opt:stop()
+            opt:seek(0)
+            opt:play()
+        end
+    elseif label == "BACK" then
+        closeOptionsMenuLayout()
     elseif label == "EXIT" then
         love.event.quit()
     end
@@ -540,7 +1142,7 @@ local function nudgeParticleOutOfRadialSymbol(p, sw, sh)
     p.y = p.y + (dy / dist) * push
 end
 
-local function initParticles()
+initParticles = function()
     UI.particles = {}
     local sw, sh = love.graphics.getDimensions()
     for _ = 1, PARTICLE_COUNT do
@@ -558,12 +1160,23 @@ local function initParticles()
 end
 
 function love.load()
-    love.window.setMode(1280, 720, {resizable = true, highdpi = true})
+    love.graphics.setDefaultFilter("linear", "linear", 1)
+    captureDefaultFontLineHeights()
+    loadSettings()
+    local s = UI.settings
+    love.window.setMode(s.winW, s.winH, WINDOW_FLAGS)
+    if s.fullscreen then
+        love.window.setFullscreen(true, "desktop")
+    end
+    applyVsyncFlag()
+    for i, p in ipairs(RES_PRESETS) do
+        if p[1] == s.winW and p[2] == s.winH then
+            s.resIdx = i
+            break
+        end
+    end
     love.mouse.setRelativeMode(false)
     love.mouse.setVisible(true)
-    love.graphics.setDefaultFilter("linear", "linear", 1)
-
-    captureDefaultFontLineHeights()
 
     UI.logo = love.graphics.newImage("src/img/M.png")
 
@@ -616,6 +1229,13 @@ function love.load()
         UI.hoverSound = hovSrc
     end
 
+    UI.optionsSound = nil
+    local okOpt, optSrc = pcall(love.audio.newSource, "src/audio/options.wav", "static")
+    if okOpt and optSrc then
+        UI.optionsSound = optSrc
+    end
+
+    applyAudioVolumes()
     updateLayout()
     initParticles()
 end
@@ -626,6 +1246,7 @@ function updateLayout()
     UI.offsetX = math.floor((w - UI.V_WIDTH * UI.scale) * 0.5 + 0.5)
     UI.offsetY = math.floor((h - UI.V_HEIGHT * UI.scale) * 0.5 + 0.5)
     refreshUiFonts()
+    refreshSettingsFonts()
 end
 
 function love.resize(w, h)
@@ -634,6 +1255,11 @@ function love.resize(w, h)
 end
 
 local function updatePreviewHoverMix(dt)
+    if menuShowsOptionsDetail() then
+        UI.previewHoverMix = 0
+        UI.lastPreviewImgHover = false
+        return
+    end
     if not (UI.previewImage or UI.previewImage2) then
         UI.previewHoverMix = 0
         UI.lastPreviewImgHover = false
@@ -684,6 +1310,20 @@ function love.update(dt)
         x, v = target, 0
     end
     UI.lerpSelection, UI.lerpVel = x, v
+
+    UI.menuOptionsT = UI.menuOptionsT
+        + (UI.menuOptionsTarget - UI.menuOptionsT) * (1 - math.exp(-MENU_OPTIONS_T_RATE * dt))
+
+    local detailNow = menuShowsOptionsDetail()
+    if detailNow and not UI.optionsDetailView then
+        UI.optionsDetailView = true
+        UI.selection = 1
+        UI.lerpSelection = 1
+        UI.lerpVel = 0
+        UI.audioSliderFocus = 1
+    elseif not detailNow then
+        UI.optionsDetailView = false
+    end
 
     local sw, sh = love.graphics.getDimensions()
     for _, p in ipairs(UI.particles) do
@@ -781,6 +1421,7 @@ function drawBackground()
 end
 
 local function drawPreviewPanel()
+    local fp = 1 - menuOptionsEase()
     local x0, y0, pw, ph = getPreviewLayout()
     local sx, sy, sw, shImg = getPreviewImageScreenRect()
     local sh = math.max(1, math.floor(ph * UI.scale + 0.5))
@@ -802,7 +1443,7 @@ local function drawPreviewPanel()
     love.graphics.translate(UI.offsetX, UI.offsetY)
     love.graphics.scale(UI.scale)
 
-    love.graphics.setColor(0.99, 0.99, 0.98, 1)
+    love.graphics.setColor(0.99, 0.99, 0.98, fp)
     love.graphics.rectangle("fill", x0, y0, pw, ph)
 
     love.graphics.pop()
@@ -817,15 +1458,15 @@ local function drawPreviewPanel()
         local mix = UI.previewShotMix
         if UI.previewImage2 then
             if mix < 0.998 then
-                love.graphics.setColor(1, 1, 1, 1 - mix)
+                love.graphics.setColor(1, 1, 1, (1 - mix) * fp)
                 love.graphics.draw(UI.previewImage, gx, gy, 0, imgSc, imgSc)
             end
             if mix > 0.002 then
-                love.graphics.setColor(1, 1, 1, mix)
+                love.graphics.setColor(1, 1, 1, mix * fp)
                 love.graphics.draw(UI.previewImage2, gx, gy, 0, imgSc, imgSc)
             end
         else
-            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.setColor(1, 1, 1, fp)
             love.graphics.draw(UI.previewImage, gx, gy, 0, imgSc, imgSc)
         end
         love.graphics.setShader()
@@ -838,10 +1479,10 @@ local function drawPreviewPanel()
     love.graphics.translate(UI.offsetX, UI.offsetY)
     love.graphics.scale(UI.scale)
 
-    love.graphics.setColor(0.88, 0.14, 0.12)
+    love.graphics.setColor(0.88, 0.14, 0.12, fp)
     love.graphics.rectangle("fill", x0, fy, pw, PREVIEW_FOOTER_RULE_VIRT)
 
-    love.graphics.setColor(1, 1, 1)
+    love.graphics.setColor(1, 1, 1, fp)
     love.graphics.rectangle("fill", x0, fy + PREVIEW_FOOTER_RULE_VIRT, pw, PREVIEW_FOOTER_H - PREVIEW_FOOTER_RULE_VIRT)
 
     love.graphics.pop()
@@ -852,10 +1493,10 @@ local function drawPreviewPanel()
     local wrapPx = math.max(48, math.floor((pw - textPadX * 2) * UI.scale + 0.5))
     love.graphics.setShader()
     love.graphics.setFont(UI.fontFooter)
-    love.graphics.setColor(0.14, 0.14, 0.16)
+    love.graphics.setColor(0.14, 0.14, 0.16, fp)
     love.graphics.printf(UI.updateInfoText, txtX, txtY, wrapPx, "left")
 
-    love.graphics.setColor(1, 1, 1)
+    love.graphics.setColor(1, 1, 1, fp)
     love.graphics.rectangle("fill", sx - o, sy - o, sw + o * 2, o)
     love.graphics.rectangle("fill", sx - o, sy + sh, sw + o * 2, o)
     love.graphics.rectangle("fill", sx - o, sy, o, sh)
@@ -865,12 +1506,13 @@ end
 function drawAmbientParticles()
     local prevBlend, prevAlpha = love.graphics.getBlendMode()
     love.graphics.setBlendMode("add", "alphamultiply")
+    local pm = UI.settings.particlesLight and 0.3 or 1
 
     for _, p in ipairs(UI.particles) do
         local tw = 0.5 + math.sin(UI.timer * 1.1 + p.phase) * 0.35
-        love.graphics.setColor(1, 0.82, 0.65, p.a * tw)
+        love.graphics.setColor(1, 0.82, 0.65, p.a * tw * pm)
         love.graphics.circle("fill", p.x, p.y, p.r)
-        love.graphics.setColor(1, 0.95, 0.85, p.a * tw * 0.35)
+        love.graphics.setColor(1, 0.95, 0.85, p.a * tw * 0.35 * pm)
         love.graphics.circle("fill", p.x, p.y, p.r * 2.4)
     end
 
@@ -878,6 +1520,10 @@ function drawAmbientParticles()
 end
 
 function drawUI()
+    local inSettings = menuShowsOptionsDetail()
+    local fadeRest = inSettings and 1 or (1 - menuOptionsEase())
+    local logoA = inSettings and 0 or (1 - menuOptionsEase())
+
     love.graphics.push()
     love.graphics.translate(UI.offsetX, UI.offsetY)
     love.graphics.scale(UI.scale)
@@ -889,50 +1535,80 @@ function drawUI()
     UI.uiShader:send("time", UI.timer)
     love.graphics.setShader(UI.uiShader)
 
+    if logoA > 0.01 then
+        love.graphics.setColor(0, 0, 0, 0.2 * logoA)
+        love.graphics.draw(UI.logo, LOGO_X + bannerShadowOx, LOGO_Y + logoHover + bannerShadowOy, 0, logoScale, logoScale)
+
+        love.graphics.setColor(1, 1, 1, logoA)
+        love.graphics.draw(UI.logo, LOGO_X, LOGO_Y + logoHover, 0, logoScale, logoScale)
+    end
+
+    local te = menuOptionsEase()
+    local ax = rowCenterX(UI.menuOptionsT)
+    local bannerAx = inSettings and MENU_PILL_CENTER_X or ax
+    local selTy = interpRowMetric(UI.lerpSelection, function(ii)
+        return rowTextY(ii, UI.menuOptionsT)
+    end)
+    local rs = 1 + (MENU_OPTIONS_SCALE_MAX - 1) * te
+
+    love.graphics.translate(bannerAx, selTy + MENU_OPTIONS_BANNER_PIVOT_Y)
+    love.graphics.scale(rs)
     love.graphics.setColor(0, 0, 0, 0.2)
-    love.graphics.draw(UI.logo, LOGO_X + bannerShadowOx, LOGO_Y + logoHover + bannerShadowOy, 0, logoScale, logoScale)
-
+    love.graphics.polygon("fill", -235, -33, 275, -33, 245, 40, -265, 40)
     love.graphics.setColor(1, 1, 1)
-    love.graphics.draw(UI.logo, LOGO_X, LOGO_Y + logoHover, 0, logoScale, logoScale)
-
-    local startY = MENU_START_Y
-    local spacing = MENU_SPACING
-    local bannerY = startY + (UI.lerpSelection - 1) * spacing
-
-    love.graphics.setColor(0, 0, 0, 0.2)
-    love.graphics.polygon("fill", 65, bannerY + 2, 575, bannerY + 2, 545, bannerY + 75, 35, bannerY + 75)
-
-    love.graphics.setColor(1, 1, 1)
-    love.graphics.polygon("fill", 60, bannerY - 5, 570, bannerY - 5, 540, bannerY + 68, 30, bannerY + 68)
+    love.graphics.polygon("fill", -240, -36.5, 270, -36.5, 240, 36.5, -270, 36.5)
 
     love.graphics.setShader()
     love.graphics.pop()
 
     love.graphics.setFont(UI.fontMain)
-    for i, label in ipairs(UI.options) do
-        local y = startY + (i - 1) * spacing
+    for i, label in ipairs(getMenuLabels()) do
+        local ty = rowTextY(i, UI.menuOptionsT)
+        local axRow = rowCenterX(UI.menuOptionsT)
+        local axDraw = inSettings and MENU_PILL_CENTER_X or axRow
+        local sx = UI.offsetX + axDraw * UI.scale
+        local sy = UI.offsetY + ty * UI.scale
         local isSelected = (i == UI.selection)
-        local tx, ty = virtToScreen(135, y)
+        local w = UI.fontMain:getWidth(label)
+        -- translate(sx,sy) and scale(rs) are in screen space; offsets must be (screen px)/rs.
+        -- Center every row on the same axis as the selection pill (main menu moves with rowCenterX;
+        -- options stay on MENU_PILL_CENTER_X). A fixed left margin only looked OK before the pill grew.
+        local leftScr = UI.offsetX + axDraw * UI.scale - w * rs * 0.5
+        local lx = (leftScr - sx) / rs
+
+        love.graphics.push()
+        love.graphics.translate(sx, sy)
+        love.graphics.scale(rs)
 
         if isSelected then
             local cappyBounce = math.abs(math.sin(UI.timer * 5)) * 5
-            local cx, cy = virtToScreen(85 + cappyBounce, y + 32)
-            local cr = math.max(3, math.floor(14 * UI.scale + 0.5))
             love.graphics.setColor(0.08, 0.08, 0.08, 1)
-            if UI.menuBtnIcon then
-                local iw, ih = UI.menuBtnIcon:getDimensions()
-                local diam = 2 * cr
-                local iconSc = diam / math.max(iw, ih)
-                love.graphics.draw(UI.menuBtnIcon, cx, cy, 0, iconSc, iconSc, iw * 0.5, ih * 0.5)
-            else
-                love.graphics.circle("fill", cx, cy, cr)
+            if not inSettings then
+                local iconR = math.max(3, math.floor(14 * UI.scale + 0.5)) * rs
+                local iconScr = leftScr - 10 * UI.scale - iconR + cappyBounce * UI.scale
+                local ix = (iconScr - sx) / rs
+                local iy = (32 * UI.scale) / rs
+                local crScreen = math.max(3, math.floor(14 * UI.scale + 0.5))
+                if UI.menuBtnIcon then
+                    local iw, ih = UI.menuBtnIcon:getDimensions()
+                    local diam = 2 * crScreen
+                    local iconSc = diam / math.max(iw, ih)
+                    love.graphics.draw(UI.menuBtnIcon, ix, iy, 0, iconSc, iconSc, iw * 0.5, ih * 0.5)
+                else
+                    love.graphics.circle("fill", ix, iy, crScreen)
+                end
             end
             love.graphics.setColor(0.08, 0.08, 0.08)
         else
             love.graphics.setColor(0.98, 0.98, 1, 0.94)
         end
 
-        love.graphics.print(label, tx, ty)
+        local labelDy = 0
+        if inSettings then
+            labelDy = -MENU_OPTIONS_TEXT_NUDGE_SCREEN_PX / rs
+        end
+        love.graphics.print(label, lx, labelDy)
+        love.graphics.pop()
     end
 
     love.graphics.push()
@@ -944,9 +1620,10 @@ function drawUI()
     local vm = 36
     local vx = UI.V_WIDTH - vm - UI.fontVersion:getWidth(verText)
     local vy = UI.V_HEIGHT - vm - UI.fontVersion:getHeight()
-    love.graphics.setColor(0, 0, 0, 0.42)
+    local verA = inSettings and 0.96 or (0.96 * fadeRest)
+    love.graphics.setColor(0, 0, 0, 0.42 * verA)
     love.graphics.print(verText, vx + 2, vy + 2)
-    love.graphics.setColor(0.98, 0.98, 1, 0.96)
+    love.graphics.setColor(0.98, 0.98, 1, verA)
     love.graphics.print(verText, vx, vy)
     love.graphics.pop()
     love.graphics.setColor(1, 1, 1, 1)
@@ -960,7 +1637,11 @@ function love.draw()
 
     drawBackground()
     drawAmbientParticles()
-    drawPreviewPanel()
+    if menuShowsOptionsDetail() then
+        drawSettingsPanel()
+    else
+        drawPreviewPanel()
+    end
     drawUI()
 
     if UI.irisActive then
@@ -972,12 +1653,35 @@ function love.keypressed(key)
     if UI.view == "game" or UI.irisActive then
         return
     end
+    if key == "escape" and UI.menuOptionsTarget > 0.5 then
+        if menuShowsOptionsDetail() then
+            closeOptionsMenuLayout()
+        else
+            UI.menuOptionsTarget = 0
+        end
+        return
+    end
+    if menuShowsOptionsDetail() and UI.selection == 1 then
+        if key == "tab" then
+            UI.audioSliderFocus = (UI.audioSliderFocus % 3) + 1
+            return
+        end
+        if key == "[" then
+            nudgeAudioSlider(-0.04)
+            return
+        end
+        if key == "]" then
+            nudgeAudioSlider(0.04)
+            return
+        end
+    end
+    local nLab = #getMenuLabels()
     if key == "up" or key == "w" then
         UI.selection = UI.selection - 1
-        if UI.selection < 1 then UI.selection = #UI.options end
+        if UI.selection < 1 then UI.selection = nLab end
     elseif key == "down" or key == "s" then
         UI.selection = UI.selection + 1
-        if UI.selection > #UI.options then UI.selection = 1 end
+        if UI.selection > nLab then UI.selection = 1 end
     elseif key == "return" or key == "kpenter" or key == "space" then
         activateMenuOption(UI.selection)
     end
@@ -986,6 +1690,9 @@ end
 function love.mousemoved(x, y, dx, dy)
     if UI.view == "game" or UI.irisActive then
         return
+    end
+    if UI.settingsDrag then
+        updateSettingsSliderDrag(screenToVirtual(x, y))
     end
     local vx, vy = screenToVirtual(x, y)
     local idx = getMenuIndexAtVirtual(vx, vy)
@@ -998,9 +1705,21 @@ function love.mousepressed(x, y, button, istouch, presses)
     end
     if button ~= 1 then return end
     local vx, vy = screenToVirtual(x, y)
+    if trySettingsPanelMousePressed(vx, vy, button) then
+        return
+    end
     local idx = getMenuIndexAtVirtual(vx, vy)
     if idx then
         UI.selection = idx
         activateMenuOption(idx)
+    end
+end
+
+function love.mousereleased(x, y, button, istouch, presses)
+    if button == 1 then
+        if UI.settingsDrag then
+            saveSettings()
+        end
+        UI.settingsDrag = nil
     end
 end
