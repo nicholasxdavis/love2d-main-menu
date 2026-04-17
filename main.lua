@@ -1,13 +1,14 @@
--- =============================================================================
--- BLACNOVA UI CORE: MICRO-INTERACTIONS & MOTION
--- =============================================================================
-
 local UI = {
     selection = 1,
     lerpSelection = 1,
     lerpVel = 0,
     timer = 0,
     options = {"RESUME", "NEW GAME", "OPTIONS", "EXIT"},
+
+    view = "menu",
+    irisActive = false,
+    irisTime = 0,
+    gameScreenT = 0,
 
     V_WIDTH = 1920,
     V_HEIGHT = 1080,
@@ -16,28 +17,35 @@ local UI = {
     particles = {},
     bgImage = nil,
     previewImage = nil,
+    previewImage2 = nil,
+    previewShotMix = 0,
     bgShader = nil,
     bgPostShader = nil,
     bgCanvas = nil,
     uiShader = nil,
     previewShader = nil,
     previewHoverMix = 0,
+    menuBtnIcon = nil,
     handCursor = nil,
     fontFooter = nil,
+    fontVersion = nil,
     fontMainPx = 0,
     fontFooterPx = 0,
+    fontVersionPx = 0,
     updateInfoText = "UPDATE: v1.0 — Patch notes, version info, and latest news appear here.",
+
+    gameStartSound = nil,
+    hoverSound = nil,
+    lastHoverMenuIndex = nil,
+    lastPreviewImgHover = false,
 }
 
--- Damped spring toward an integer menu index (slight overshoot = snappy / elastic).
 local SPRING_K = 260
 local SPRING_C = 24
 
--- Saira Extra Condensed (OFL). Same point sizes can change line height vs LÖVE's default font;
--- we cap height to the default font's metrics so menu rows / banner alignment stay stable.
-local FONT_MENU = "fonts/SairaExtraCondensed-Regular.ttf"
-local FONT_MENU_BOLD = "fonts/SairaExtraCondensed-ExtraBold.ttf"
-local REF_MAIN_LINE_H, REF_FOOT_LINE_H
+local FONT_MENU = "src/fonts/SairaExtraCondensed-Regular.ttf"
+local FONT_MENU_BOLD = "src/fonts/SairaExtraCondensed-ExtraBold.ttf"
+local REF_MAIN_LINE_H, REF_FOOT_LINE_H, REF_VERSION_LINE_H
 
 local function captureDefaultFontLineHeights()
     local fm = love.graphics.newFont(52)
@@ -46,9 +54,11 @@ local function captureDefaultFontLineHeights()
     local ff = love.graphics.newFont(26)
     REF_FOOT_LINE_H = ff:getHeight()
     ff:release()
+    local fv = love.graphics.newFont(40)
+    REF_VERSION_LINE_H = fv:getHeight()
+    fv:release()
 end
 
---- Create a TTF font at most `requestedPx`, reducing size if needed so getHeight() <= targetLineH.
 local function newFontFitLineHeight(path, requestedPx, targetLineH, minSize)
     minSize = minSize or 15
     local size = math.max(minSize, math.floor(requestedPx + 0.5))
@@ -76,27 +86,63 @@ local LOGO_X, LOGO_Y = 98, 98
 local LOGO_TARGET_W = 450
 local LOGO_SCALE_MUL = 0.94
 
--- Preview panel: explicit size in virtual 1920×1080 coords (what you edit is what you see on screen).
 local PREVIEW_W = 930
 local PREVIEW_H = 485
 local PREVIEW_MARGIN_RIGHT = 42
 local PREVIEW_OUTLINE_PX = 2
 local PREVIEW_FOOTER_H = 78
 local PREVIEW_FOOTER_RULE_VIRT = 3
--- Screenshot preview: smooth hover (exp smoothing); shader caps color at PREVIEW_COLOR_MAX of original.
 local PREVIEW_HOVER_LERP_RATE = 1.85
 local PREVIEW_COLOR_MAX = 0.8
+local PREVIEW_SHOT_HOLD = 6
+local PREVIEW_SHOT_CROSSFADE = 1.35
 
--- Full-screen tint: slow loop red → green → yellow → blue → red (smooth RGB lerp).
-local BG_CYCLE_SECONDS = 220
+local IRIS_OUT_DURATION = 2.0
+local GAME_PLACEHOLDER_BLACK_HOLD = 0.9
+local GAME_PLACEHOLDER_TEXT = "Game here lol..."
+
+local GAME_PLACEHOLDER_TYPE_BASE = 0.068
+local GAME_PLACEHOLDER_TYPE_SPACE_MUL = 1.42
+local GAME_PLACEHOLDER_TYPE_PUNCT_MUL = 1.88
+
+local GAME_PLACEHOLDER_TYPE_DELAYS = {}
+do local s = GAME_PLACEHOLDER_TEXT
+    for i = 1, #s do
+        local c = s:sub(i, i)
+        local d = GAME_PLACEHOLDER_TYPE_BASE
+        if c == " " then
+            d = d * GAME_PLACEHOLDER_TYPE_SPACE_MUL
+        elseif c == "." then
+            d = d * GAME_PLACEHOLDER_TYPE_PUNCT_MUL
+        end
+        GAME_PLACEHOLDER_TYPE_DELAYS[i] = d
+    end
+end
+
+local function gamePlaceholderTypewriterProgress(typeT)
+    if typeT <= 0 then
+        return 0
+    end
+    local s = GAME_PLACEHOLDER_TEXT
+    local acc = 0
+    for i = 1, #s do
+        local d = GAME_PLACEHOLDER_TYPE_DELAYS[i]
+        if typeT < acc + d then
+            return (i - 1) + (typeT - acc) / d
+        end
+        acc = acc + d
+    end
+    return #s
+end
+
+local BG_CYCLE_SECONDS = 440
 local BG_CYCLE_COLORS = {
-    { 0.78, 0.05, 0.05 }, -- red
-    { 0.06, 0.70, 0.14 }, -- green
-    { 0.88, 0.78, 0.10 }, -- yellow
-    { 0.10, 0.22, 0.82 }, -- blue
+    { 0.78, 0.05, 0.05 },
+    { 0.06, 0.70, 0.14 },
+    { 0.88, 0.78, 0.10 },
+    { 0.10, 0.22, 0.82 },
 }
 
--- Zero 1st/2nd derivative at 0 and 1: eases through each blend with no harsh midpoint snap.
 local function smootherstep01(t)
     t = math.max(0, math.min(1, t))
     return t * t * t * (t * (t * 6 - 15) + 10)
@@ -124,6 +170,27 @@ local function getPreviewLayout()
     local px = UI.V_WIDTH - PREVIEW_MARGIN_RIGHT - pw
     local py = (UI.V_HEIGHT - ph) * 0.5
     return px, py, pw, ph
+end
+
+local function updatePreviewShotCycle()
+    if not (UI.previewImage and UI.previewImage2) then
+        UI.previewShotMix = 0
+        return
+    end
+    local hold, xfd = PREVIEW_SHOT_HOLD, PREVIEW_SHOT_CROSSFADE
+    local period = 2 * (hold + xfd)
+    local t = UI.timer % period
+    if t < hold then
+        UI.previewShotMix = 0
+    elseif t < hold + xfd then
+        UI.previewShotMix = smootherstep01((t - hold) / xfd)
+    elseif t < hold + xfd + hold then
+        UI.previewShotMix = 1
+    elseif t < period then
+        UI.previewShotMix = 1 - smootherstep01((t - hold - xfd - hold) / xfd)
+    else
+        UI.previewShotMix = 0
+    end
 end
 
 local function getPreviewImageScreenRect()
@@ -160,6 +227,13 @@ local function refreshUiFonts()
         UI.fontFooter = newFontFitLineHeight(FONT_MENU, footPx, targetFootH)
         UI.fontFooterPx = footPx
     end
+    local versionPx = math.max(22, math.floor(40 * UI.scale + 0.5))
+    if versionPx ~= UI.fontVersionPx then
+        if UI.fontVersion then UI.fontVersion:release() end
+        local targetVerH = REF_VERSION_LINE_H and (REF_VERSION_LINE_H * versionPx / 40) or versionPx
+        UI.fontVersion = newFontFitLineHeight(FONT_MENU, versionPx, targetVerH, 22)
+        UI.fontVersionPx = versionPx
+    end
 end
 
 local function getMenuIndexAtVirtual(vx, vy)
@@ -173,21 +247,118 @@ local function getMenuIndexAtVirtual(vx, vy)
     return nil
 end
 
+local function playHoverSound()
+    local gs = UI.gameStartSound
+    if gs and gs:isPlaying() then
+        return
+    end
+    local s = UI.hoverSound
+    if not s then return end
+    s:stop()
+    s:seek(0)
+    s:play()
+end
+
 local function updateMenuCursor()
+    if UI.view == "game" or UI.irisActive then
+        love.mouse.setCursor()
+        return
+    end
     local mx, my = love.mouse.getPosition()
     local vx, vy = screenToVirtual(mx, my)
-    if getMenuIndexAtVirtual(vx, vy) then
+    local idx = getMenuIndexAtVirtual(vx, vy)
+    if idx then
         love.mouse.setCursor(UI.handCursor)
+        if idx ~= UI.lastHoverMenuIndex then
+            playHoverSound()
+        end
+        UI.lastHoverMenuIndex = idx
     else
         love.mouse.setCursor()
+        UI.lastHoverMenuIndex = nil
     end
 end
 
 local function activateMenuOption(index)
+    if UI.irisActive or UI.view == "game" then
+        return
+    end
     local label = UI.options[index]
-    if label == "EXIT" then
+    if label == "RESUME" or label == "NEW GAME" then
+        local h = UI.hoverSound
+        if h then h:stop() end
+        local g = UI.gameStartSound
+        if g then
+            g:stop()
+            g:seek(0)
+            g:play()
+        end
+        UI.irisActive = true
+        UI.irisTime = 0
+    elseif label == "EXIT" then
         love.event.quit()
     end
+end
+
+local function drawIrisCloseToBlack()
+    local sw, sh = love.graphics.getDimensions()
+    local cx, cy = sw * 0.5, sh * 0.5
+    local maxR = math.sqrt(cx * cx + cy * cy) + 8
+    local p = smootherstep01(UI.irisTime / IRIS_OUT_DURATION)
+    local r = maxR * (1 - p)
+
+    love.graphics.stencil(function()
+        love.graphics.circle("fill", cx, cy, math.max(r, 0))
+    end, "replace", 1)
+    love.graphics.setStencilTest("equal", 0)
+    love.graphics.setColor(0, 0, 0, 1)
+    love.graphics.rectangle("fill", 0, 0, sw, sh)
+    love.graphics.setStencilTest()
+end
+
+local function drawGamePlaceholder()
+    local sw, sh = love.graphics.getDimensions()
+    love.graphics.setColor(0, 0, 0, 1)
+    love.graphics.rectangle("fill", 0, 0, sw, sh)
+
+    local typeT = (UI.gameScreenT or 0) - GAME_PLACEHOLDER_BLACK_HOLD
+    local vis = gamePlaceholderTypewriterProgress(typeT)
+    if vis <= 0 then
+        return
+    end
+
+    local s = GAME_PLACEHOLDER_TEXT
+    local n = math.floor(vis + 1e-8)
+    local frac = vis - n
+    local pre = s:sub(1, n)
+    local cur = s:sub(n + 1, n + 1)
+
+    love.graphics.setFont(UI.fontMain)
+    local fh = UI.fontMain:getHeight()
+    local y = sh * 0.5 - fh * 0.5
+    local font = UI.fontMain
+    local wPre = font:getWidth(pre)
+    local wCur = (cur ~= "") and font:getWidth(cur) or 0
+    local xStart = sw * 0.5 - (wPre + wCur) * 0.5
+
+    love.graphics.setColor(0.96, 0.96, 0.98, 1)
+    love.graphics.print(pre, xStart, y)
+    if cur ~= "" then
+        local ca = smootherstep01(frac)
+        love.graphics.setColor(0.96, 0.96, 0.98, ca)
+        love.graphics.print(cur, xStart + wPre, y)
+    end
+
+    local cursorBlink = (math.floor(UI.timer * 2.35) % 2) == 0
+    if cursorBlink and vis < #s then
+        local curs = "|"
+        local wCurs = font:getWidth(curs)
+        local cx = xStart + wPre + wCur * smootherstep01(frac)
+        love.graphics.setColor(0.96, 0.96, 0.98, 0.82)
+        love.graphics.print(curs, cx - wCurs * 0.35, y)
+    end
+
+    love.graphics.setColor(1, 1, 1, 1)
 end
 
 local BG_SHADER = [[
@@ -209,7 +380,6 @@ vec4 effect(vec4 color, Image tex, vec2 texture_coords, vec2 screen_coords)
 }
 ]]
 
--- Fullscreen pass: soft bleed, muted tones, paper grain — reads like wash / watercolor over the scene.
 local BG_WATERCOLOR_SHADER = [[
 extern number time;
 extern vec2 screenSize;
@@ -263,7 +433,6 @@ vec4 effect(vec4 color, Image tex, vec2 texture_coords, vec2 screen_coords)
 }
 ]]
 
--- Rec. 601 luma; colorBlend 0 = grayscale, 1 = mix toward original (capped by colorMax).
 local PREVIEW_GRAYSCALE_SHADER = [[
 extern number colorBlend;
 extern number colorMax;
@@ -279,9 +448,8 @@ vec4 effect(vec4 color, Image tex, vec2 texture_coords, vec2 screen_coords)
 }
 ]]
 
--- Matches radial spokes / rings in drawBackgroundLayers; keep ambient particles out of this disk.
 local PARTICLE_RADIAL_EXCL_PAD = 72
-local PARTICLE_COUNT = 119 -- ~15% fewer than original 140
+local PARTICLE_COUNT = 119
 
 local function getParticleRadialSymbolParams(sw, sh)
     local scale = (UI.scale and UI.scale > 0) and UI.scale or math.min(sw / UI.V_WIDTH, sh / UI.V_HEIGHT)
@@ -397,16 +565,35 @@ function love.load()
 
     captureDefaultFontLineHeights()
 
-    UI.logo = love.graphics.newImage("logo.png")
+    UI.logo = love.graphics.newImage("src/img/M.png")
 
-    local ok, img = pcall(love.graphics.newImage, "background.png")
+    UI.menuBtnIcon = nil
+    for _, path in ipairs({ "src/img/btn-icon.png", "btn-icon.png", "img/btn-icon.png" }) do
+        local okIcon, iconImg = pcall(love.graphics.newImage, path)
+        if okIcon then
+            UI.menuBtnIcon = iconImg
+            break
+        end
+    end
+
+    local ok, img = pcall(love.graphics.newImage, "src/img/background.png")
     if ok then UI.bgImage = img end
     UI.previewImage = nil
-    for _, path in ipairs({ "screenshot.png", "img/screenshot.png" }) do
-        local okShot, shot = pcall(love.graphics.newImage, path)
-        if okShot then
-            UI.previewImage = shot
+    UI.previewImage2 = nil
+    local shotPairs = {
+        { "src/img/screenshot.png", "src/img/screenshot2.png" },
+        { "screenshot.png", "screenshot2.png" },
+        { "img/screenshot.png", "img/screenshot2.png" },
+    }
+    for _, pair in ipairs(shotPairs) do
+        local ok1, img1 = pcall(love.graphics.newImage, pair[1])
+        local ok2, img2 = pcall(love.graphics.newImage, pair[2])
+        if ok1 and ok2 then
+            UI.previewImage, UI.previewImage2 = img1, img2
             break
+        end
+        if ok1 and not UI.previewImage then
+            UI.previewImage = img1
         end
     end
 
@@ -416,6 +603,18 @@ function love.load()
     UI.previewShader = love.graphics.newShader(PREVIEW_GRAYSCALE_SHADER)
     UI.previewShader:send("colorMax", PREVIEW_COLOR_MAX)
     UI.handCursor = love.mouse.getSystemCursor("hand")
+
+    UI.gameStartSound = nil
+    local okGs, gsSrc = pcall(love.audio.newSource, "src/audio/game-start.wav", "static")
+    if okGs and gsSrc then
+        UI.gameStartSound = gsSrc
+    end
+
+    UI.hoverSound = nil
+    local okHov, hovSrc = pcall(love.audio.newSource, "src/audio/hover.mp3", "static")
+    if okHov and hovSrc then
+        UI.hoverSound = hovSrc
+    end
 
     updateLayout()
     initParticles()
@@ -435,19 +634,25 @@ function love.resize(w, h)
 end
 
 local function updatePreviewHoverMix(dt)
-    if not UI.previewImage then
+    if not (UI.previewImage or UI.previewImage2) then
         UI.previewHoverMix = 0
+        UI.lastPreviewImgHover = false
         return
     end
     local _, _, _, ph = getPreviewLayout()
     local imageH = ph - PREVIEW_FOOTER_H
     if imageH <= 8 then
         UI.previewHoverMix = 0
+        UI.lastPreviewImgHover = false
         return
     end
     local sx, sy, sw, shImg = getPreviewImageScreenRect()
     local mx, my = love.mouse.getPosition()
     local hover = mx >= sx and mx < sx + sw and my >= sy and my < sy + shImg
+    if hover and not UI.lastPreviewImgHover and not UI.irisActive then
+        playHoverSound()
+    end
+    UI.lastPreviewImgHover = hover
     local target = hover and 1 or 0
     local k = PREVIEW_HOVER_LERP_RATE
     UI.previewHoverMix = UI.previewHoverMix + (target - UI.previewHoverMix) * (1 - math.exp(-k * dt))
@@ -455,6 +660,19 @@ end
 
 function love.update(dt)
     UI.timer = UI.timer + dt
+
+    if UI.irisActive then
+        UI.irisTime = UI.irisTime + dt
+        if UI.irisTime >= IRIS_OUT_DURATION then
+            UI.irisActive = false
+            UI.view = "game"
+            UI.gameScreenT = 0
+            love.mouse.setCursor()
+        end
+    elseif UI.view == "game" then
+        UI.gameScreenT = (UI.gameScreenT or 0) + dt
+        return
+    end
 
     local target = UI.selection
     local x = UI.lerpSelection
@@ -491,6 +709,7 @@ function love.update(dt)
 
     updateMenuCursor()
     updatePreviewHoverMix(dt)
+    updatePreviewShotCycle()
 end
 
 local function ensureBgCanvas(sw, sh)
@@ -570,8 +789,9 @@ local function drawPreviewPanel()
     local imageH = ph - PREVIEW_FOOTER_H
 
     local ox, oy, drawW, drawH, sc
-    if UI.previewImage and imageH > 8 then
-        local iw, ih = UI.previewImage:getDimensions()
+    local layoutImg = UI.previewImage or UI.previewImage2
+    if layoutImg and imageH > 8 then
+        local iw, ih = layoutImg:getDimensions()
         sc = math.max(pw / iw, imageH / ih)
         drawW, drawH = iw * sc, ih * sc
         ox = x0 + (pw - drawW) * 0.5
@@ -592,11 +812,24 @@ local function drawPreviewPanel()
         local gy = math.floor(UI.offsetY + oy * UI.scale + 0.5)
         local imgSc = sc * UI.scale
         love.graphics.setScissor(sx, sy, sw, shImg)
-        love.graphics.setColor(1, 1, 1, 1)
         UI.previewShader:send("colorBlend", UI.previewHoverMix)
         love.graphics.setShader(UI.previewShader)
-        love.graphics.draw(UI.previewImage, gx, gy, 0, imgSc, imgSc)
+        local mix = UI.previewShotMix
+        if UI.previewImage2 then
+            if mix < 0.998 then
+                love.graphics.setColor(1, 1, 1, 1 - mix)
+                love.graphics.draw(UI.previewImage, gx, gy, 0, imgSc, imgSc)
+            end
+            if mix > 0.002 then
+                love.graphics.setColor(1, 1, 1, mix)
+                love.graphics.draw(UI.previewImage2, gx, gy, 0, imgSc, imgSc)
+            end
+        else
+            love.graphics.setColor(1, 1, 1, 1)
+            love.graphics.draw(UI.previewImage, gx, gy, 0, imgSc, imgSc)
+        end
         love.graphics.setShader()
+        love.graphics.setColor(1, 1, 1, 1)
         love.graphics.setScissor()
     end
 
@@ -650,16 +883,21 @@ function drawUI()
     love.graphics.scale(UI.scale)
 
     local logoHover = math.sin(UI.timer * 1.5) * 10
+    local logoScale = getLogoDrawScale() * 0.8
+    local bannerShadowOx, bannerShadowOy = 5, 7
+
+    UI.uiShader:send("time", UI.timer)
+    love.graphics.setShader(UI.uiShader)
+
+    love.graphics.setColor(0, 0, 0, 0.2)
+    love.graphics.draw(UI.logo, LOGO_X + bannerShadowOx, LOGO_Y + logoHover + bannerShadowOy, 0, logoScale, logoScale)
+
     love.graphics.setColor(1, 1, 1)
-    local logoScale = getLogoDrawScale()
     love.graphics.draw(UI.logo, LOGO_X, LOGO_Y + logoHover, 0, logoScale, logoScale)
 
     local startY = MENU_START_Y
     local spacing = MENU_SPACING
     local bannerY = startY + (UI.lerpSelection - 1) * spacing
-
-    UI.uiShader:send("time", UI.timer)
-    love.graphics.setShader(UI.uiShader)
 
     love.graphics.setColor(0, 0, 0, 0.2)
     love.graphics.polygon("fill", 65, bannerY + 2, 575, bannerY + 2, 545, bannerY + 75, 35, bannerY + 75)
@@ -680,8 +918,15 @@ function drawUI()
             local cappyBounce = math.abs(math.sin(UI.timer * 5)) * 5
             local cx, cy = virtToScreen(85 + cappyBounce, y + 32)
             local cr = math.max(3, math.floor(14 * UI.scale + 0.5))
-            love.graphics.setColor(0.9, 0.1, 0.1)
-            love.graphics.circle("fill", cx, cy, cr)
+            love.graphics.setColor(0.08, 0.08, 0.08, 1)
+            if UI.menuBtnIcon then
+                local iw, ih = UI.menuBtnIcon:getDimensions()
+                local diam = 2 * cr
+                local iconSc = diam / math.max(iw, ih)
+                love.graphics.draw(UI.menuBtnIcon, cx, cy, 0, iconSc, iconSc, iw * 0.5, ih * 0.5)
+            else
+                love.graphics.circle("fill", cx, cy, cr)
+            end
             love.graphics.setColor(0.08, 0.08, 0.08)
         else
             love.graphics.setColor(0.98, 0.98, 1, 0.94)
@@ -689,16 +934,44 @@ function drawUI()
 
         love.graphics.print(label, tx, ty)
     end
+
+    love.graphics.push()
+    love.graphics.translate(UI.offsetX, UI.offsetY)
+    love.graphics.scale(UI.scale)
+    love.graphics.setShader()
+    love.graphics.setFont(UI.fontVersion)
+    local verText = "VERSION 1.0"
+    local vm = 36
+    local vx = UI.V_WIDTH - vm - UI.fontVersion:getWidth(verText)
+    local vy = UI.V_HEIGHT - vm - UI.fontVersion:getHeight()
+    love.graphics.setColor(0, 0, 0, 0.42)
+    love.graphics.print(verText, vx + 2, vy + 2)
+    love.graphics.setColor(0.98, 0.98, 1, 0.96)
+    love.graphics.print(verText, vx, vy)
+    love.graphics.pop()
+    love.graphics.setColor(1, 1, 1, 1)
 end
 
 function love.draw()
+    if UI.view == "game" then
+        drawGamePlaceholder()
+        return
+    end
+
     drawBackground()
     drawAmbientParticles()
     drawPreviewPanel()
     drawUI()
+
+    if UI.irisActive then
+        drawIrisCloseToBlack()
+    end
 end
 
 function love.keypressed(key)
+    if UI.view == "game" or UI.irisActive then
+        return
+    end
     if key == "up" or key == "w" then
         UI.selection = UI.selection - 1
         if UI.selection < 1 then UI.selection = #UI.options end
@@ -711,12 +984,18 @@ function love.keypressed(key)
 end
 
 function love.mousemoved(x, y, dx, dy)
+    if UI.view == "game" or UI.irisActive then
+        return
+    end
     local vx, vy = screenToVirtual(x, y)
     local idx = getMenuIndexAtVirtual(vx, vy)
     if idx then UI.selection = idx end
 end
 
 function love.mousepressed(x, y, button, istouch, presses)
+    if UI.view == "game" or UI.irisActive then
+        return
+    end
     if button ~= 1 then return end
     local vx, vy = screenToVirtual(x, y)
     local idx = getMenuIndexAtVirtual(vx, vy)
