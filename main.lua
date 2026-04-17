@@ -49,6 +49,8 @@ local UI = {
         master = 1,
         music = 1,
         sfx = 1,
+        menuBgMusic = true,
+        menuMusicShuffle = false,
         vsync = true,
         fullscreen = false,
         winW = 1280,
@@ -243,6 +245,17 @@ local RES_PRESETS = {
 local SETTINGS_FILE = "menu_settings.txt"
 local WINDOW_FLAGS = { resizable = true, highdpi = true, msaa = 4 }
 
+local MENU_MUSIC_DIR = "src/audio/music"
+local MENU_MUSIC_EXT = { [".mp3"] = true, [".ogg"] = true, [".wav"] = true, [".flac"] = true }
+
+local MenuMusic = {
+    tracks = {},
+    source = nil,
+    trackIndex = 1,
+    gatePlaying = false,
+    playShieldT = 0,
+}
+
 local function virtPointInRect(vx, vy, rx, ry, rw, rh)
     return vx >= rx and vx <= rx + rw and vy >= ry and vy <= ry + rh
 end
@@ -283,6 +296,8 @@ local function saveSettings()
         string.format("winH=%d", s.winH),
         string.format("resIdx=%d", s.resIdx),
         "particlesLight=" .. (s.particlesLight and "1" or "0"),
+        "menuBgMusic=" .. (s.menuBgMusic and "1" or "0"),
+        "menuMusicShuffle=" .. (s.menuMusicShuffle and "1" or "0"),
     }
     love.filesystem.write(SETTINGS_FILE, table.concat(lines, "\n"))
 end
@@ -307,9 +322,136 @@ local function loadSettings()
             elseif k == "resIdx" then
                 local n = tonumber(v)
                 if n then UI.settings.resIdx = math.max(1, math.min(#RES_PRESETS, math.floor(n))) end
+            elseif k == "menuBgMusic" or k == "menuMusicShuffle" then
+                UI.settings[k] = (v == "1" or v == "true")
             end
         end
     end
+end
+
+local function scanMenuMusicTracks()
+    MenuMusic.tracks = {}
+    local dirInfo = love.filesystem.getInfo(MENU_MUSIC_DIR)
+    if not dirInfo or dirInfo.type ~= "directory" then
+        return
+    end
+    local names = love.filesystem.getDirectoryItems(MENU_MUSIC_DIR)
+    table.sort(names)
+    for _, name in ipairs(names) do
+        local ext = name:lower():match("%.%w+$")
+        if ext and MENU_MUSIC_EXT[ext] then
+            MenuMusic.tracks[#MenuMusic.tracks + 1] = MENU_MUSIC_DIR .. "/" .. name
+        end
+    end
+    MenuMusic.trackIndex = math.max(1, math.min(math.max(1, #MenuMusic.tracks), MenuMusic.trackIndex))
+end
+
+local function releaseMenuMusicSource()
+    if MenuMusic.source then
+        MenuMusic.source:stop()
+        MenuMusic.source:release()
+        MenuMusic.source = nil
+    end
+end
+
+local function applyMenuMusicVolume()
+    if MenuMusic.source then
+        MenuMusic.source:setVolume(UI.settings.music)
+    end
+end
+
+local function playMenuTrackAt(idx)
+    local paths = MenuMusic.tracks
+    local n = #paths
+    if n < 1 then
+        return
+    end
+    idx = math.max(1, math.min(n, math.floor(idx)))
+    releaseMenuMusicSource()
+    local path = paths[idx]
+    local ok, src = pcall(love.audio.newSource, path, "stream")
+    if not ok or not src then
+        return
+    end
+    src:setLooping(false)
+    MenuMusic.source = src
+    MenuMusic.trackIndex = idx
+    MenuMusic.playShieldT = 0.4
+    applyMenuMusicVolume()
+    src:play()
+end
+
+local function advanceMenuTrack()
+    local n = #MenuMusic.tracks
+    if n < 1 then
+        return
+    end
+    if UI.settings.menuMusicShuffle then
+        local nextIdx = MenuMusic.trackIndex
+        if n > 1 then
+            repeat
+                nextIdx = love.math.random(1, n)
+            until nextIdx ~= MenuMusic.trackIndex
+        else
+            nextIdx = 1
+        end
+        MenuMusic.trackIndex = nextIdx
+    else
+        MenuMusic.trackIndex = (MenuMusic.trackIndex % n) + 1
+    end
+    playMenuTrackAt(MenuMusic.trackIndex)
+end
+
+local function updateMenuMusic(dt)
+    if UI.view ~= "menu" then
+        if MenuMusic.source and MenuMusic.source:isPlaying() then
+            MenuMusic.source:stop()
+        end
+        MenuMusic.gatePlaying = false
+        return
+    end
+
+    if MenuMusic.playShieldT > 0 then
+        MenuMusic.playShieldT = math.max(0, MenuMusic.playShieldT - dt)
+    end
+
+    if not UI.settings.menuBgMusic or #MenuMusic.tracks < 1 then
+        if MenuMusic.source and MenuMusic.source:isPlaying() then
+            MenuMusic.source:stop()
+        end
+        MenuMusic.gatePlaying = false
+        return
+    end
+
+    local src = MenuMusic.source
+    local playing = src and src:isPlaying()
+    if not playing then
+        local endedNaturally = MenuMusic.gatePlaying and MenuMusic.playShieldT <= 0
+        if endedNaturally then
+            advanceMenuTrack()
+        else
+            playMenuTrackAt(MenuMusic.trackIndex)
+        end
+    end
+
+    applyMenuMusicVolume()
+    MenuMusic.gatePlaying = MenuMusic.source and MenuMusic.source:isPlaying()
+end
+
+local function toggleMenuBgMusicSetting()
+    UI.settings.menuBgMusic = not UI.settings.menuBgMusic
+    if not UI.settings.menuBgMusic then
+        MenuMusic.gatePlaying = false
+        if MenuMusic.source then
+            MenuMusic.source:stop()
+        end
+    end
+    saveSettings()
+end
+
+local function toggleMenuMusicShuffleSetting()
+    UI.settings.menuMusicShuffle = not UI.settings.menuMusicShuffle
+    saveSettings()
 end
 
 local function applyAudioVolumes()
@@ -319,6 +461,7 @@ local function applyAudioVolumes()
     if UI.hoverSound then UI.hoverSound:setVolume(sv) end
     if UI.gameStartSound then UI.gameStartSound:setVolume(sv) end
     if UI.optionsSound then UI.optionsSound:setVolume(sv) end
+    applyMenuMusicVolume()
 end
 
 local function applyVsyncFlag()
@@ -452,10 +595,19 @@ local function drawAudioSettingsVirt(x0, y0, pw, ph)
     for _, row in ipairs(rows) do
         drawSettingsSliderVirt(row.x, row.y, row.w, UI.settings[row.key], row.label)
     end
+    local bx = x0 + pad
+    local bw = pw - pad * 2
+    local bh = 58
+    local yT1 = y0 + 478
+    local yT2 = yT1 + bh + 22
+    local onStr = "MENU MUSIC —  " .. (UI.settings.menuBgMusic and "ON" or "OFF")
+    drawSettingsTrapezoidRowVirt(bx, yT1, bw, bh, onStr)
+    local ordStr = "TRACK ORDER  —  " .. (UI.settings.menuMusicShuffle and "SHUFFLE" or "SEQUENTIAL")
+    drawSettingsTrapezoidRowVirt(bx, yT2, bw, bh, ordStr)
     love.graphics.setFont(fsf)
     love.graphics.setColor(0.32, 0.34, 0.4, 1)
     love.graphics.printf(
-        "[ and ] adjust |   Tab: next row   |   Drag track",
+        "Music plays on the main menu only. Tap rows below to toggle.  [ and ]  |  Tab  |  Drag",
         vr(x0 + pad),
         vr(y0 + ph - 52),
         pw - pad * 2,
@@ -588,6 +740,18 @@ local function drawSettingsPanel()
     love.graphics.pop()
 end
 
+local function audioToggleRects(x0, y0, pw)
+    local pad = SETTINGS_INNER_PAD_X
+    local bx = x0 + pad
+    local bw = pw - pad * 2
+    local bh = 58
+    local y1 = y0 + 478
+    local y2 = y1 + bh + 22
+    local hitH = bh + 18
+    return { x = bx, y = y1, w = bw, h = hitH, kind = "menuBgMusic" },
+        { x = bx, y = y2, w = bw, h = hitH, kind = "menuMusicShuffle" }
+end
+
 local function graphicsToggleRects(x0, y0, pw)
     local pad = SETTINGS_INNER_PAD_X
     local bx = x0 + pad
@@ -628,6 +792,15 @@ local function trySettingsPanelMousePressed(vx, vy, button)
                 saveSettings()
                 return true
             end
+        end
+        local a1, a2 = audioToggleRects(x0, y0, pw)
+        if virtPointInRect(vx, vy, a1.x, a1.y, a1.w, a1.h) then
+            toggleMenuBgMusicSetting()
+            return true
+        end
+        if virtPointInRect(vx, vy, a2.x, a2.y, a2.w, a2.h) then
+            toggleMenuMusicShuffleSetting()
+            return true
         end
         return true
     elseif sel == 2 then
@@ -686,6 +859,9 @@ local function settingsPanelWantsHand(mx, my)
                 return true
             end
         end
+        local a1, a2 = audioToggleRects(x0, y0, pw)
+        if virtPointInRect(vx, vy, a1.x, a1.y, a1.w, a1.h) then return true end
+        if virtPointInRect(vx, vy, a2.x, a2.y, a2.w, a2.h) then return true end
     elseif sel == 2 then
         local r1, r2 = graphicsToggleRects(x0, y0, pw)
         if virtPointInRect(vx, vy, r1.x, r1.y, r1.w, r1.h) then return true end
@@ -1235,6 +1411,8 @@ function love.load()
         UI.optionsSound = optSrc
     end
 
+    scanMenuMusicTracks()
+
     applyAudioVolumes()
     updateLayout()
     initParticles()
@@ -1286,6 +1464,7 @@ end
 
 function love.update(dt)
     UI.timer = UI.timer + dt
+    updateMenuMusic(dt)
 
     if UI.irisActive then
         UI.irisTime = UI.irisTime + dt
@@ -1722,4 +1901,8 @@ function love.mousereleased(x, y, button, istouch, presses)
         end
         UI.settingsDrag = nil
     end
+end
+
+function love.quit()
+    releaseMenuMusicSource()
 end
