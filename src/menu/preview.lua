@@ -127,7 +127,8 @@ function M.drawPanel()
     love.graphics.translate(UI.offsetX, UI.offsetY)
     love.graphics.scale(UI.scale)
 
-    love.graphics.setColor(0.88, 0.14, 0.12, fp)
+    local cr, cg, cb = mathu.getCyclingBackgroundRgb(UI.timer)
+    love.graphics.setColor(cr, cg, cb, fp)
     love.graphics.rectangle("fill", x0, fy, pw, config.PREVIEW_FOOTER_RULE_VIRT)
 
     love.graphics.setColor(1, 1, 1, fp)

@@ -70,6 +70,21 @@ function M.load()
         end
     end
 
+    UI.sliderThumbStar = nil
+    do
+        local okStar, starImg = pcall(love.graphics.newImage, "src/img/mario-star.png")
+        if okStar then
+            -- Sharper thumb when scaled; anisotropy helps if supported (Love 11.4+).
+            local okF = pcall(function()
+                starImg:setFilter("linear", "linear", 8)
+            end)
+            if not okF then
+                starImg:setFilter("linear", "linear")
+            end
+            UI.sliderThumbStar = starImg
+        end
+    end
+
     local ok, img = pcall(love.graphics.newImage, "src/img/background.png")
     if ok then
         UI.bgImage = img
@@ -176,6 +191,27 @@ function M.update(dt)
     updateMenuCursor()
     preview.updateHoverMix(dt)
     preview.updateShotCycle()
+
+    if layout.menuShowsOptionsDetail() then
+        local mx, my = love.mouse.getPosition()
+        local vx, vy = layout.screenToVirtual(mx, my)
+        local hov = layout.getMenuIndexAtVirtual(vx, vy)
+        local n = layout.menuOptionCount()
+        local rate = config.MENU_OPTIONS_DETAIL_HOVER_LERP_RATE
+        local k = 1 - math.exp(-rate * dt)
+        for i = 1, n do
+            local t = UI.optionsDetailHoverLift[i] or 0
+            local target = (hov == i) and 1 or 0
+            UI.optionsDetailHoverLift[i] = t + (target - t) * k
+        end
+        for i = n + 1, #UI.optionsDetailHoverLift do
+            UI.optionsDetailHoverLift[i] = nil
+        end
+    else
+        for i = 1, #UI.optionsDetailHoverLift do
+            UI.optionsDetailHoverLift[i] = 0
+        end
+    end
 end
 
 function M.draw()

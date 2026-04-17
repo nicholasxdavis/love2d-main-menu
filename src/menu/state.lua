@@ -31,6 +31,7 @@ M.UI = {
     previewShader = nil,
     previewHoverMix = 0,
     menuBtnIcon = nil,
+    sliderThumbStar = nil,
     handCursor = nil,
     fontFooter = nil,
     fontVersion = nil,
@@ -52,6 +53,8 @@ M.UI = {
     menuOptionsT = 0,
     menuOptionsTarget = 0,
     optionsDetailView = false,
+    --- Options detail rows only: hover lift 0..1 per index (smoothed in app.update).
+    optionsDetailHoverLift = { 0, 0, 0, 0 },
 
     settings = {
         master = 1,

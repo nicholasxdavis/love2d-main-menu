@@ -95,11 +95,9 @@ function M.draw()
 
         local labelDy = 0
         if inSettings then
-            local f = UI.fontMain
-            local lh = f:getHeight()
-            local bl = (f.getBaseline and f:getBaseline()) or (lh * 0.76)
-            -- Pill center (virtual): selTy + PIVOT; baseline must account for print() = baseline Y and scale(rs).
-            labelDy = config.MENU_OPTIONS_BANNER_PIVOT_Y * UI.scale / rs + bl - lh * 0.5
+            labelDy = config.MENU_OPTIONS_DETAIL_BASELINE_NUDGE_SCREEN_PX / rs
+            local lift = UI.optionsDetailHoverLift[i] or 0
+            labelDy = labelDy - (config.MENU_OPTIONS_DETAIL_HOVER_LIFT_SCREEN_PX / rs) * lift
         end
         love.graphics.print(label, lx, labelDy)
         love.graphics.pop()

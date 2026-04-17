@@ -13,6 +13,11 @@ M.MENU_OPTIONS_SCALE_MAX = 1.38
 M.MENU_OPTIONS_SPACING_ADD = 52
 M.MENU_OPTIONS_T_RATE = 2.85
 M.MENU_OPTIONS_BANNER_PIVOT_Y = 31.5
+-- Options/detail list only: baseline offset before row scale (applied as value/rs). Positive = lower; negative = raise.
+M.MENU_OPTIONS_DETAIL_BASELINE_NUDGE_SCREEN_PX = 2
+-- Options detail only: label moves up this many screen pixels while row is hovered (animated).
+M.MENU_OPTIONS_DETAIL_HOVER_LIFT_SCREEN_PX = 8
+M.MENU_OPTIONS_DETAIL_HOVER_LERP_RATE = 14
 -- Gap between selection icon and label (screen px; multiplied by UI.scale in draw_ui).
 M.MENU_BTN_ICON_TEXT_GAP_SCREEN_PX = 20
 
@@ -23,7 +28,7 @@ M.LOGO_SCALE_MUL = 0.94
 M.PREVIEW_W = 930
 M.PREVIEW_H = 485
 M.SETTINGS_PANEL_W = 1120
-M.SETTINGS_PANEL_H = 740
+M.SETTINGS_PANEL_H = 900
 M.PREVIEW_MARGIN_RIGHT = 42
 M.PREVIEW_OUTLINE_PX = 2
 M.PREVIEW_FOOTER_H = 78
