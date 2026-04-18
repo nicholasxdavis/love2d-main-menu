@@ -32,14 +32,54 @@ function M.getLogoDrawScale()
 end
 
 function M.menuShowsOptionsDetail()
-    return UI.menuOptionsTarget > 0.5
+    return UI.submenu == "options" and UI.menuOptionsTarget > 0.5
+end
+
+function M.menuShowsSavesDetail()
+    return UI.submenu == "saves" and UI.menuOptionsTarget > 0.5
+end
+
+-- Expanded left-column layout (bigger rows, shifted pill) for options or saves.
+function M.menuInSubmenuLayout()
+    return UI.submenu ~= nil and UI.menuOptionsTarget > 0.5
 end
 
 function M.getMenuLabels()
+    if M.menuShowsSavesDetail() then
+        return UI.savesMenuLabels
+    end
     if M.menuShowsOptionsDetail() then
         return UI.optionsDetail
     end
     return UI.options
+end
+
+function M.refreshSavesMenuLabels()
+    local slots = UI.savesSlots or {}
+    local t = {}
+    for i = 1, 3 do
+        local s = slots[i]
+        if s and s.exists then
+            local name = s.name or ("Save " .. i)
+            if #name > 22 then
+                name = name:sub(1, 21) .. ".."
+            end
+            t[i] = string.format("SLOT %d   %s", i, name)
+        else
+            t[i] = string.format("SLOT %d   (empty)", i)
+        end
+    end
+    t[4] = "BACK"
+    UI.savesMenuLabels = t
+end
+
+function M.closeSavesMenuLayout()
+    UI.menuOptionsTarget = 0
+    UI.submenu = nil
+    UI.selection = UI.savesReturnSelection or 1
+    UI.lerpSelection = UI.selection
+    UI.lerpVel = 0
+    UI.settingsDrag = nil
 end
 
 function M.menuOptionCount()
@@ -115,7 +155,7 @@ function M.getMenuIndexAtVirtual(vx, vy)
         local ty = M.rowTextY(i, UI.menuOptionsT)
         local rs = 1 + (config.MENU_OPTIONS_SCALE_MAX - 1) * te
         local y0, y1 = ty - 12 * rs, ty + 80 * rs
-        local ax = M.menuShowsOptionsDetail() and M.optionsPillCenterX(rs) or M.rowCenterX(UI.menuOptionsT)
+        local ax = M.menuInSubmenuLayout() and M.optionsPillCenterX(rs) or M.rowCenterX(UI.menuOptionsT)
         local halfW = (0.5 * (540 * (1 - te) + 620 * te)) * rs
         local x0, x1 = ax - halfW, ax + halfW
         if vx >= x0 and vx <= x1 and vy >= y0 and vy <= y1 then
@@ -141,32 +181,53 @@ end
 
 function M.closeOptionsMenuLayout()
     UI.menuOptionsTarget = 0
+    UI.submenu = nil
     UI.selection = 3
     UI.lerpSelection = 3
     UI.lerpVel = 0
     UI.settingsDrag = nil
 end
 
+--- @return integer|nil slotIndex If non-nil, caller should start the game in that save slot.
 function M.activateMenuOption(index)
     if UI.irisActive or UI.view == "game" then
-        return
+        return nil
     end
     local labels = M.getMenuLabels()
     local label = labels[index]
+
+    if M.menuShowsOptionsDetail() then
+        if label == "BACK" then
+            M.closeOptionsMenuLayout()
+        end
+        return nil
+    end
+
+    if M.menuShowsSavesDetail() then
+        if label == "BACK" then
+            M.closeSavesMenuLayout()
+            return nil
+        end
+        if index >= 1 and index <= 3 then
+            local slot = UI.savesSlots and UI.savesSlots[index]
+            if UI.savesMode == "resume" and not (slot and slot.exists) then
+                return nil
+            end
+            return index
+        end
+        return nil
+    end
+
     if label == "RESUME" or label == "NEW GAME" then
-        local h = UI.hoverSound
-        if h then
-            h:stop()
+        if UI.submenu == "options" then
+            return nil
         end
-        local g = UI.gameStartSound
-        if g then
-            g:stop()
-            g:seek(0)
-            g:play()
-        end
-        UI.irisActive = true
-        UI.irisTime = 0
-    elseif label == "OPTIONS" then
+        local saves = require("src.menu.saves")
+        UI.submenu = "saves"
+        UI.savesMode = (label == "NEW GAME") and "new" or "resume"
+        UI.savesSlots = saves.loadAll()
+        M.refreshSavesMenuLabels()
+        UI.savesReturnSelection = index
         UI.menuOptionsTarget = 1
         local opt = UI.optionsSound
         if opt then
@@ -174,11 +235,21 @@ function M.activateMenuOption(index)
             opt:seek(0)
             opt:play()
         end
-    elseif label == "BACK" then
-        M.closeOptionsMenuLayout()
+        return nil
+    elseif label == "OPTIONS" then
+        UI.submenu = "options"
+        UI.menuOptionsTarget = 1
+        local opt = UI.optionsSound
+        if opt then
+            opt:stop()
+            opt:seek(0)
+            opt:play()
+        end
+        return nil
     elseif label == "EXIT" then
         love.event.quit()
     end
+    return nil
 end
 
 return M

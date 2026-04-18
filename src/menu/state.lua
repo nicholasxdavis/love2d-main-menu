@@ -52,6 +52,8 @@ M.UI = {
 
     menuOptionsT = 0,
     menuOptionsTarget = 0,
+    --- nil | "options" | "saves" — which submenu owns the expanded menu animation
+    submenu = nil,
     optionsDetailView = false,
     --- Options detail rows only: hover lift 0..1 per index (smoothed in app.update).
     optionsDetailHoverLift = { 0, 0, 0, 0 },
@@ -76,6 +78,13 @@ M.UI = {
     fontSettingsFoot = nil,
     fontSettingsMainPx = 0,
     fontSettingsFootPx = 0,
+
+    -- Save-slot submenu (same animation as options: menuOptionsTarget 0→1)
+    savesMode           = "new",   -- "new" or "resume"
+    savesSlots          = {},
+    savesMenuLabels     = { "", "", "", "BACK" },
+    savesReturnSelection = 1,      -- main-menu row to restore on BACK
+    activeSaveSlot      = nil,     -- slot index chosen when launching the game
 }
 
 M.MenuMusic = {

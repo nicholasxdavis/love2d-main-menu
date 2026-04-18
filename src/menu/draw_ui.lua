@@ -7,9 +7,9 @@ local UI = state.UI
 local M = {}
 
 function M.draw()
-    local inSettings = layout.menuShowsOptionsDetail()
-    local fadeRest = inSettings and 1 or (1 - layout.menuOptionsEase())
-    local logoA = inSettings and 0 or (1 - layout.menuOptionsEase())
+    local inSubmenu = layout.menuInSubmenuLayout()
+    local fadeRest = inSubmenu and 1 or (1 - layout.menuOptionsEase())
+    local logoA = inSubmenu and 0 or (1 - layout.menuOptionsEase())
 
     love.graphics.push()
     love.graphics.translate(UI.offsetX, UI.offsetY)
@@ -40,7 +40,7 @@ function M.draw()
     local te = layout.menuOptionsEase()
     local ax = layout.rowCenterX(UI.menuOptionsT)
     local rs = 1 + (config.MENU_OPTIONS_SCALE_MAX - 1) * te
-    local bannerAx = inSettings and layout.optionsPillCenterX(rs) or ax
+    local bannerAx = inSubmenu and layout.optionsPillCenterX(rs) or ax
     local selTy = layout.interpRowMetric(UI.lerpSelection, function(ii)
         return layout.rowTextY(ii, UI.menuOptionsT)
     end)
@@ -58,7 +58,7 @@ function M.draw()
     for i, label in ipairs(layout.getMenuLabels()) do
         local ty = layout.rowTextY(i, UI.menuOptionsT)
         local axRow = layout.rowCenterX(UI.menuOptionsT)
-        local axDraw = inSettings and layout.optionsPillCenterX(rs) or axRow
+        local axDraw = inSubmenu and layout.optionsPillCenterX(rs) or axRow
         local sx = UI.offsetX + axDraw * UI.scale
         local sy = UI.offsetY + ty * UI.scale
         local isSelected = (i == UI.selection)
@@ -73,7 +73,7 @@ function M.draw()
         if isSelected then
             local cappyBounce = math.abs(math.sin(UI.timer * 5)) * 5
             love.graphics.setColor(0.08, 0.08, 0.08, 1)
-            if not inSettings then
+            if not inSubmenu then
                 local iconR = math.max(3, math.floor(14 * UI.scale + 0.5)) * rs
                 local iconScr = leftScr - config.MENU_BTN_ICON_TEXT_GAP_SCREEN_PX * UI.scale - iconR + cappyBounce * UI.scale
                 local ix = (iconScr - sx) / rs
@@ -94,7 +94,7 @@ function M.draw()
         end
 
         local labelDy = 0
-        if inSettings then
+        if inSubmenu then
             labelDy = config.MENU_OPTIONS_DETAIL_BASELINE_NUDGE_SCREEN_PX / rs
             local lift = UI.optionsDetailHoverLift[i] or 0
             labelDy = labelDy - (config.MENU_OPTIONS_DETAIL_HOVER_LIFT_SCREEN_PX / rs) * lift
@@ -112,7 +112,7 @@ function M.draw()
     local vm = 36
     local vx = UI.V_WIDTH - vm - UI.fontVersion:getWidth(verText)
     local vy = UI.V_HEIGHT - vm - UI.fontVersion:getHeight()
-    local verA = inSettings and 0.96 or (0.96 * fadeRest)
+    local verA = inSubmenu and 0.96 or (0.96 * fadeRest)
     love.graphics.setColor(0, 0, 0, 0.42 * verA)
     love.graphics.print(verText, vx + 2, vy + 2)
     love.graphics.setColor(0.98, 0.98, 1, verA)

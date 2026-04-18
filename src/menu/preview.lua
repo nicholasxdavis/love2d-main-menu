@@ -39,6 +39,11 @@ function M.updateShotCycle()
 end
 
 function M.updateHoverMix(dt)
+    if UI.submenu == "saves" then
+        UI.previewHoverMix = 0
+        UI.lastPreviewImgHover = false
+        return
+    end
     if layout.menuShowsOptionsDetail() then
         UI.previewHoverMix = 0
         UI.lastPreviewImgHover = false
@@ -78,7 +83,9 @@ function M.drawPanel()
     local imageH = ph - config.PREVIEW_FOOTER_H
 
     local ox, oy, drawW, drawH, sc
-    local layoutImg = UI.previewImage or UI.previewImage2
+    -- Save-slot picker: keep the preview *chrome* (cream panel + footer) but hide
+    -- the busy screenshot so the slot UI reads as part of this panel, not a sticker.
+    local layoutImg = (UI.submenu ~= "saves") and (UI.previewImage or UI.previewImage2) or nil
     if layoutImg and imageH > 8 then
         local iw, ih = layoutImg:getDimensions()
         sc = math.max(pw / iw, imageH / ih)

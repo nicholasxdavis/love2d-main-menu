@@ -11,10 +11,39 @@ local background = require("src.menu.background")
 local preview = require("src.menu.preview")
 local draw_ui = require("src.menu.draw_ui")
 local game_view = require("src.menu.game_view")
+local save_slot_view = require("src.menu.save_slot_view")
+local saves = require("src.menu.saves")
 
 local UI = state.UI
 
 local M = {}
+
+-- Plays sounds, persists the chosen slot, and kicks off the iris transition.
+local function launchGameWithSlot(slotIdx)
+    local h = UI.hoverSound
+    if h then h:stop() end
+    local g = UI.gameStartSound
+    if g then
+        g:stop()
+        g:seek(0)
+        g:play()
+    end
+
+    if UI.savesMode == "new" then
+        saves.writeSlot(slotIdx, {
+            name      = "Save " .. slotIdx,
+            playtime  = 0,
+            level     = "World 1-1",
+            chapter   = 1,
+        })
+    end
+
+    UI.activeSaveSlot = slotIdx
+    UI.submenu = nil
+    UI.menuOptionsTarget = 0
+    UI.irisActive = true
+    UI.irisTime = 0
+end
 
 local function updateMenuCursor()
     if UI.view == "game" or UI.irisActive then
@@ -176,13 +205,30 @@ function M.update(dt)
     UI.menuOptionsT = UI.menuOptionsT
         + (UI.menuOptionsTarget - UI.menuOptionsT) * (1 - math.exp(-config.MENU_OPTIONS_T_RATE * dt))
 
-    local detailNow = layout.menuShowsOptionsDetail()
+    local optionsDetailNow = layout.menuShowsOptionsDetail()
+    local savesDetailNow = layout.menuShowsSavesDetail()
+    local detailNow = optionsDetailNow or savesDetailNow
     if detailNow and not UI.optionsDetailView then
         UI.optionsDetailView = true
-        UI.selection = 1
-        UI.lerpSelection = 1
-        UI.lerpVel = 0
-        UI.audioSliderFocus = 1
+        if optionsDetailNow then
+            UI.selection = 1
+            UI.lerpSelection = 1
+            UI.lerpVel = 0
+            UI.audioSliderFocus = 1
+        elseif savesDetailNow then
+            UI.selection = 1
+            if UI.savesMode == "resume" then
+                for i = 1, 3 do
+                    local s = UI.savesSlots[i]
+                    if s and s.exists then
+                        UI.selection = i
+                        break
+                    end
+                end
+            end
+            UI.lerpSelection = UI.selection
+            UI.lerpVel = 0
+        end
     elseif not detailNow then
         UI.optionsDetailView = false
     end
@@ -192,7 +238,7 @@ function M.update(dt)
     preview.updateHoverMix(dt)
     preview.updateShotCycle()
 
-    if layout.menuShowsOptionsDetail() then
+    if layout.menuShowsOptionsDetail() or layout.menuShowsSavesDetail() then
         local mx, my = love.mouse.getPosition()
         local vx, vy = layout.screenToVirtual(mx, my)
         local hov = layout.getMenuIndexAtVirtual(vx, vy)
@@ -227,6 +273,9 @@ function M.draw()
     else
         preview.drawPanel()
     end
+    if layout.menuShowsSavesDetail() then
+        save_slot_view.drawRightPanel()
+    end
     draw_ui.draw()
 
     if UI.irisActive then
@@ -238,11 +287,15 @@ function M.keypressed(key)
     if UI.view == "game" or UI.irisActive then
         return
     end
+
     if key == "escape" and UI.menuOptionsTarget > 0.5 then
-        if layout.menuShowsOptionsDetail() then
+        if UI.submenu == "options" then
             layout.closeOptionsMenuLayout()
+        elseif UI.submenu == "saves" then
+            layout.closeSavesMenuLayout()
         else
             UI.menuOptionsTarget = 0
+            UI.submenu = nil
         end
         return
     end
@@ -272,7 +325,10 @@ function M.keypressed(key)
             UI.selection = 1
         end
     elseif key == "return" or key == "kpenter" or key == "space" then
-        layout.activateMenuOption(UI.selection)
+        local launchSlot = layout.activateMenuOption(UI.selection)
+        if launchSlot then
+            launchGameWithSlot(launchSlot)
+        end
     end
 end
 
@@ -280,10 +336,10 @@ function M.mousemoved(x, y, dx, dy)
     if UI.view == "game" or UI.irisActive then
         return
     end
-    if UI.settingsDrag then
-        settings_panel.updateSettingsSliderDrag(layout.screenToVirtual(x, y))
-    end
     local vx, vy = layout.screenToVirtual(x, y)
+    if UI.settingsDrag then
+        settings_panel.updateSettingsSliderDrag(vx, vy)
+    end
     local idx = layout.getMenuIndexAtVirtual(vx, vy)
     if idx then
         UI.selection = idx
@@ -304,7 +360,10 @@ function M.mousepressed(x, y, button, istouch, presses)
     local idx = layout.getMenuIndexAtVirtual(vx, vy)
     if idx then
         UI.selection = idx
-        layout.activateMenuOption(idx)
+        local launchSlot = layout.activateMenuOption(idx)
+        if launchSlot then
+            launchGameWithSlot(launchSlot)
+        end
     end
 end
 
