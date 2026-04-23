@@ -11,6 +11,16 @@ local UI = state.UI
 
 local M = {}
 
+local function playOptionSwitchSound()
+    local s = UI.optionSwitchSound
+    if not s then
+        return
+    end
+    s:stop()
+    s:seek(0)
+    s:play()
+end
+
 -- Virtual hit box for each audio slider row (label + track + thumb), relative to `row.y`.
 local AUDIO_SLIDER_HIT_Y0 = -90
 local AUDIO_SLIDER_HIT_H = 140
@@ -365,11 +375,13 @@ function M.toggleVsyncSetting()
     UI.settings.vsync = not UI.settings.vsync
     audio.applyVsyncFlag(UI)
     settings_persist.saveSettings(UI)
+    playOptionSwitchSound()
 end
 
 function M.toggleParticlesSetting()
     UI.settings.particlesLight = not UI.settings.particlesLight
     settings_persist.saveSettings(UI)
+    playOptionSwitchSound()
 end
 
 function M.toggleFullscreenSetting()
@@ -388,6 +400,7 @@ function M.toggleFullscreenSetting()
     layout.updateLayout()
     particles.init()
     settings_persist.saveSettings(UI)
+    playOptionSwitchSound()
 end
 
 function M.cycleResolutionSetting()
@@ -403,6 +416,7 @@ function M.cycleResolutionSetting()
     layout.updateLayout()
     particles.init()
     settings_persist.saveSettings(UI)
+    playOptionSwitchSound()
 end
 
 function M.trySettingsPanelMousePressed(vx, vy, button)
@@ -421,16 +435,19 @@ function M.trySettingsPanelMousePressed(vx, vy, button)
                 UI.settings[row.key] = math.max(0, math.min(1, (vx - row.x) / row.w))
                 audio.applyAudioVolumes(UI)
                 settings_persist.saveSettings(UI)
+                playOptionSwitchSound()
                 return true
             end
         end
         local a1, a2 = audioToggleRects(x0, y0, pw)
         if layout.virtPointInRect(vx, vy, a1.x, a1.y, a1.w, a1.h) then
             music.toggleMenuBgMusicSetting()
+            playOptionSwitchSound()
             return true
         end
         if layout.virtPointInRect(vx, vy, a2.x, a2.y, a2.w, a2.h) then
             music.toggleMenuMusicShuffleSetting()
+            playOptionSwitchSound()
             return true
         end
         return true
@@ -526,6 +543,7 @@ function M.nudgeAudioSlider(delta)
     UI.settings[k] = math.max(0, math.min(1, UI.settings[k] + delta))
     audio.applyAudioVolumes(UI)
     settings_persist.saveSettings(UI)
+    playOptionSwitchSound()
 end
 
 return M

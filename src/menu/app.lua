@@ -13,6 +13,7 @@ local draw_ui = require("src.menu.draw_ui")
 local game_view = require("src.menu.game_view")
 local save_slot_view = require("src.menu.save_slot_view")
 local saves = require("src.menu.saves")
+local mathu = require("src.utils.menu_math")
 
 local UI = state.UI
 
@@ -145,19 +146,31 @@ function M.load()
     UI.handCursor = love.mouse.getSystemCursor("hand")
 
     UI.gameStartSound = nil
-    local okGs, gsSrc = pcall(love.audio.newSource, "src/audio/game-start.wav", "static")
+    local okGs, gsSrc = pcall(love.audio.newSource, "src/audio/sfx/game-start.wav", "static")
     if okGs and gsSrc then
         UI.gameStartSound = gsSrc
     end
 
+    UI.typeSound = nil
+    local okType, typeSrc = pcall(love.audio.newSource, "src/audio/sfx/typeSound.wav", "static")
+    if okType and typeSrc then
+        UI.typeSound = typeSrc
+    end
+
+    UI.optionSwitchSound = nil
+    local okSwitch, switchSrc = pcall(love.audio.newSource, "src/audio/sfx/optionSwitch.wav", "static")
+    if okSwitch and switchSrc then
+        UI.optionSwitchSound = switchSrc
+    end
+
     UI.hoverSound = nil
-    local okHov, hovSrc = pcall(love.audio.newSource, "src/audio/hover.mp3", "static")
+    local okHov, hovSrc = pcall(love.audio.newSource, "src/audio/sfx/hover.mp3", "static")
     if okHov and hovSrc then
         UI.hoverSound = hovSrc
     end
 
     UI.optionsSound = nil
-    local okOpt, optSrc = pcall(love.audio.newSource, "src/audio/options.wav", "static")
+    local okOpt, optSrc = pcall(love.audio.newSource, "src/audio/sfx/options.wav", "static")
     if okOpt and optSrc then
         UI.optionsSound = optSrc
     end
@@ -184,10 +197,24 @@ function M.update(dt)
             UI.irisActive = false
             UI.view = "game"
             UI.gameScreenT = 0
+            UI.gameTypeLastChar = 0
             love.mouse.setCursor()
         end
     elseif UI.view == "game" then
         UI.gameScreenT = (UI.gameScreenT or 0) + dt
+        local typeT = UI.gameScreenT - config.GAME_PLACEHOLDER_BLACK_HOLD
+        local vis = mathu.gamePlaceholderTypewriterProgress(typeT)
+        local typedChars = math.floor(vis + 1e-8)
+        local prevTypedChars = UI.gameTypeLastChar or 0
+        if typeT > 0 and typedChars > prevTypedChars and typedChars <= #config.GAME_PLACEHOLDER_TEXT then
+            local t = UI.typeSound
+            if t then
+                t:stop()
+                t:seek(0)
+                t:play()
+            end
+        end
+        UI.gameTypeLastChar = typedChars
         return
     end
 

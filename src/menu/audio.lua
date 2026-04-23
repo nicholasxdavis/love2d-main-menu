@@ -12,6 +12,12 @@ function M.applyAudioVolumes(UI)
     if UI.gameStartSound then
         UI.gameStartSound:setVolume(sv)
     end
+    if UI.typeSound then
+        UI.typeSound:setVolume(sv * 0.75)
+    end
+    if UI.optionSwitchSound then
+        UI.optionSwitchSound:setVolume(sv * 0.35)
+    end
     if UI.optionsSound then
         UI.optionsSound:setVolume(sv)
     end

@@ -45,10 +45,13 @@ M.UI = {
     updateInfoText = "UPDATE: v1.0 — Patch notes, version info, and latest news appear here.",
 
     gameStartSound = nil,
+    typeSound = nil,
+    optionSwitchSound = nil,
     hoverSound = nil,
     optionsSound = nil,
     lastHoverMenuIndex = nil,
     lastPreviewImgHover = false,
+    gameTypeLastChar = 0,
 
     menuOptionsT = 0,
     menuOptionsTarget = 0,
